@@ -1,0 +1,22 @@
+{
+  "builds": [
+    {
+      "src": "app.py",
+      "use": "@vercel/python",
+      "config": { "maxLambdaSize": "15mb" }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "app.py",
+      "headers": {
+        "Cache-Control": "no-cache"
+      },
+      "methods": ["GET", "POST"]
+    }
+  ],
+  "env": {
+    "PYTHON_VERSION": "3.12"
+  }
+}
