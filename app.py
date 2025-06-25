@@ -26,34 +26,33 @@ from dotenv import load_dotenv
 import ipaddress
 import string
 import sys
-from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 load_dotenv()
 
-# Configure logging
+# Configure logging for Vercel
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
 logger.debug("Initializing Flask app")
 
 # Configuration values
-FLASK_SECRET_KEY = "b8f9a3c2d7e4f1a9b0c3d6e8f2a7b4c9"
-WTF_CSRF_SECRET_KEY = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
-AES_GCM_KEY = b'\x1a\x2b\x3c\x4d\x5e\x6f\x70\x81\x92\xa3\xb4\xc5\xd6\xe7\xf8\x09\x1a\x2b\x3c\x4d\x5e\x6f\x70\x81\x92\xa3\xb4\xc5\xd6\xe7\xf8\x09'
-HMAC_KEY = b'\x0a\x1b\x2c\x3d\x4e\x5f\x60\x71\x82\x93\xa4\xb5\xc6\xd7\xe8\xf9\x0a\x1b\x2c\x3d\x4e\x5f\x60\x71\x82\x93\xa4\xb5\xc6\xd7\xe8\xf9'
-VALKEY_HOST = "valkey-c93d570-marychamberlin31-5857.g.aivencloud.com"
-VALKEY_PORT = 25534
-VALKEY_USERNAME = "default"
-VALKEY_PASSWORD = "AVNS_iypeRGpnvMGXCd4ayYL"
+FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "b8f9a3c2d7e4f1a9b0c3d6e8f2a7b4c9")
+WTF_CSRF_SECRET_KEY = os.getenv("WTF_CSRF_SECRET_KEY", "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6")
+AES_GCM_KEY = os.getenv("AES_GCM_KEY", b'\x1a\x2b\x3c\x4d\x5e\x6f\x70\x81\x92\xa3\xb4\xc5\xd6\xe7\xf8\x09\x1a\x2b\x3c\x4d\x5e\x6f\x70\x81\x92\xa3\xb4\xc5\xd6\xe7\xf8\x09')
+HMAC_KEY = os.getenv("HMAC_KEY", b'\x0a\x1b\x2c\x3d\x4e\x5f\x60\x71\x82\x93\xa4\xb5\xc6\xd7\xe8\xf9\x0a\x1b\x2c\x3d\x4e\x5f\x60\x71\x82\x93\xa4\xb5\xc6\xd7\xe8\xf9')
+VALKEY_HOST = os.getenv("VALKEY_HOST", "valkey-c93d570-marychamberlin31-5857.g.aivencloud.com")
+VALKEY_PORT = int(os.getenv("VALKEY_PORT", 25534))
+VALKEY_USERNAME = os.getenv("VALKEY_USERNAME", "default")
+VALKEY_PASSWORD = os.getenv("VALKEY_PASSWORD", "AVNS_iypeRGpnvMGXCd4ayYL")
 DATA_RETENTION_DAYS = 90
 USER_TXT_URL = os.getenv("USER_TXT_URL", "https://raw.githubusercontent.com/anderlo091/nvclerks-flask/main/user.txt")
 BLOCKLIST_URL = "https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt"
 AWS_CIDR_URL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
-AZURE_CIDR_URL = "https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519"
+AZURE_CIDR_URL = "https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/ServiceTags_Public_20250623.json"
 
 # Anti-bot settings
 SUSPICIOUS_UA_PATTERNS = [
@@ -62,12 +61,20 @@ SUSPICIOUS_UA_PATTERNS = [
 ]
 REQUIRED_HEADERS = ['Accept', 'Accept-Language', 'Connection']
 BLOCKED_CIDR_CACHE_KEY = "blocked_cidr"
-BLOCKED_CIDR_REFRESH_INTERVAL = 3600
+BLOCKED_CIDR_REFRESH_INTERVAL = 7200  # 2 hours to reduce Vercel timeouts
 RISK_SCORE_THRESHOLD = 75
-MAX_PAYLOAD_PADDING = 64
+MAX_PAYLOAD_PADDING = 32
+
+# Local CIDR fallback
+LOCAL_CIDR_FALLBACK = [
+    ipaddress.ip_network("169.254.0.0/16"),  # Example AWS CIDR
+    ipaddress.ip_network("20.0.0.0/8")       # Example malicious CIDR
+]
 
 # Verify keys at startup
 try:
+    if isinstance(AES_GCM_KEY, str):
+        AES_GCM_KEY = AES_GCM_KEY.encode()
     if len(AES_GCM_KEY) != 32:
         raise ValueError("AES-GCM key must be 32 bytes")
     Cipher(algorithms.AES(AES_GCM_KEY), modes.GCM(secrets.token_bytes(12)), backend=default_backend())
@@ -77,6 +84,8 @@ except Exception as e:
     raise ValueError(f"AES-GCM key initialization failed: {str(e)}")
 
 try:
+    if isinstance(HMAC_KEY, str):
+        HMAC_KEY = HMAC_KEY.encode()
     if len(HMAC_KEY) != 32:
         raise ValueError("HMAC key must be 32 bytes")
     h = hmac.HMAC(HMAC_KEY, hashes.SHA256(), backend=default_backend())
@@ -108,6 +117,7 @@ csrf = CSRFProtect(app)
 def add_noise_headers(response):
     response.headers['X-Random-Token'] = secrets.token_hex(8)
     response.headers['X-Session-ID'] = generate_random_string(16)
+    response.headers['Server'] = f"CustomServer/{secrets.token_hex(4)}"
     return response
 
 # WTForms for login and URL generation
@@ -181,48 +191,52 @@ def fetch_blocked_cidrs():
     blocked_cidrs = []
     try:
         # Fetch AWS CIDRs
-        aws_response = requests.get(AWS_CIDR_URL, timeout=10)
-        aws_response.raise_for_status()
-        aws_data = aws_response.json()
-        for prefix in aws_data.get('prefixes', []) + aws_data.get('ipv6_prefixes', []):
-            cidr = prefix.get('ip_prefix') or prefix.get('ipv6_prefix')
-            if cidr:
-                blocked_cidrs.append(ipaddress.ip_network(cidr, strict=False))
+        try:
+            aws_response = requests.get(AWS_CIDR_URL, timeout=5)
+            aws_response.raise_for_status()
+            aws_data = aws_response.json()
+            for prefix in aws_data.get('prefixes', []) + aws_data.get('ipv6_prefixes', []):
+                cidr = prefix.get('ip_prefix') or prefix.get('ipv6_prefix')
+                if cidr:
+                    blocked_cidrs.append(ipaddress.ip_network(cidr, strict=False))
+        except Exception as e:
+            logger.warning(f"Failed to fetch AWS CIDRs: {str(e)}")
 
-        # Fetch Azure CIDRs (scrape JSON URL from confirmation page)
-        azure_response = requests.get(AZURE_CIDR_URL, timeout=10)
-        azure_response.raise_for_status()
-        soup = BeautifulSoup(azure_response.text, 'html.parser')
-        json_url = soup.find('a', href=re.compile(r'.*\.json$'))
-        if json_url:
-            json_response = requests.get(json_url['href'], timeout=10)
-            json_response.raise_for_status()
-            azure_data = json_response.json()
+        # Fetch Azure CIDRs
+        try:
+            azure_response = requests.get(AZURE_CIDR_URL, timeout=5)
+            azure_response.raise_for_status()
+            azure_data = azure_response.json()
             for value in azure_data.get('values', []):
                 for cidr in value.get('properties', {}).get('addressPrefixes', []):
                     blocked_cidrs.append(ipaddress.ip_network(cidr, strict=False))
+        except Exception as e:
+            logger.warning(f"Failed to fetch Azure CIDRs: {str(e)}")
 
         # Fetch malicious CIDRs
-        blocklist_response = requests.get(BLOCKLIST_URL, timeout=10)
-        blocklist_response.raise_for_status()
-        for line in blocklist_response.text.splitlines():
-            if line.strip() and not line.startswith('#'):
-                try:
-                    blocked_cidrs.append(ipaddress.ip_network(line.split()[0], strict=False))
-                except ValueError:
-                    continue
+        try:
+            blocklist_response = requests.get(BLOCKLIST_URL, timeout=5)
+            blocklist_response.raise_for_status()
+            for line in blocklist_response.text.splitlines():
+                if line.strip() and not line.startswith('#'):
+                    try:
+                        blocked_cidrs.append(ipaddress.ip_network(line.split()[0], strict=False))
+                    except ValueError:
+                        continue
+        except Exception as e:
+            logger.warning(f"Failed to fetch malicious CIDRs: {str(e)}")
 
-        if valkey_client:
+        if blocked_cidrs and valkey_client:
             valkey_client.setex(BLOCKED_CIDR_CACHE_KEY, BLOCKED_CIDR_REFRESH_INTERVAL, json.dumps([str(cidr) for cidr in blocked_cidrs]))
         logger.debug(f"Fetched {len(blocked_cidrs)} blocked CIDRs")
-        return blocked_cidrs
+        return blocked_cidrs if blocked_cidrs else LOCAL_CIDR_FALLBACK
     except Exception as e:
         logger.error(f"Error fetching blocked CIDRs: {str(e)}")
         if valkey_client:
             cached = valkey_client.get(BLOCKED_CIDR_CACHE_KEY)
             if cached:
                 return [ipaddress.ip_network(cidr) for cidr in json.loads(cached)]
-        return []
+        return LOCAL_CIDR_FALLBACK
 
 # Anti-bot utilities
 def calculate_request_entropy(headers, query_params):
@@ -288,8 +302,11 @@ def is_suspicious_request():
 
     # Store risk score
     if valkey_client:
-        valkey_client.hincrby(f"risk_score:{ip}", "score", risk_score)
-        valkey_client.expire(f"risk_score:{ip}", 3600)
+        try:
+            valkey_client.hincrby(f"risk_score:{ip}", "score", risk_score)
+            valkey_client.expire(f"risk_score:{ip}", 3600)
+        except Exception as e:
+            logger.warning(f"Failed to store risk score for IP {ip}: {str(e)}")
 
     return risk_score >= RISK_SCORE_THRESHOLD
 
@@ -328,10 +345,10 @@ def dynamic_rate_limit(base_limit=5, base_per=60):
 def encrypt_payload(payload):
     try:
         # Add random padding
-        padding = secrets.token_bytes(random.randint(16, MAX_PAYLOAD_PADDING))
+        padding = secrets.token_bytes(random.randint(8, MAX_PAYLOAD_PADDING))
         padded_payload = json.dumps({
             "data": payload,
-            "decoy": secrets.token_hex(32),
+            "decoy": secrets.token_hex(16),
             "timestamp": int(time.time())
         }).encode() + padding
 
@@ -350,21 +367,7 @@ def encrypt_payload(payload):
         h.update(encrypted)
         signature = h.finalize()
 
-        # Split payload into parts
-        parts = []
-        chunk_size = len(encrypted) // 2 + random.randint(-20, 20)
-        for i in range(0, len(encrypted), chunk_size):
-            parts.append(base64.urlsafe_b64encode(encrypted[i:i+chunk_size]).decode())
-        sig = base64.urlsafe_b64encode(signature).decode()
-        slug = f"{uuid.uuid4()}{secrets.token_hex(10)}"
-        
-        # Store parts in Valkey
-        if valkey_client:
-            for i, part in enumerate(parts):
-                valkey_client.setex(f"payload_part:{slug}:{i}", 3600, part)
-            valkey_client.setex(f"payload_parts_count:{slug}", 3600, len(parts))
-
-        result = f"{base64.urlsafe_b64encode(slug.encode()).decode()}.{sig}"
+        result = f"{base64.urlsafe_b64encode(encrypted).decode()}.{base64.urlsafe_b64encode(signature).decode()}"
         logger.debug(f"Encrypted payload: {result[:20]}...")
         return result
     except Exception as e:
@@ -376,23 +379,8 @@ def decrypt_payload(encrypted):
         parts = encrypted.split('.')
         if len(parts) != 2:
             raise ValueError("Invalid payload format")
-        slug_b64, sig_b64 = parts
-        slug = base64.urlsafe_b64decode(slug_b64).decode()
-        signature = base64.urlsafe_b64decode(sig_b64)
-
-        # Reassemble payload from parts
-        if not valkey_client:
-            raise ValueError("Valkey unavailable for payload parts")
-        parts_count = int(valkey_client.get(f"payload_parts_count:{slug}") or 0)
-        if parts_count == 0:
-            raise ValueError("Payload parts not found")
-
-        encrypted_data = b""
-        for i in range(parts_count):
-            part = valkey_client.get(f"payload_part:{slug}:{i}")
-            if not part:
-                raise ValueError(f"Payload part {i} not found")
-            encrypted_data += base64.urlsafe_b64decode(part)
+        encrypted_data = base64.urlsafe_b64decode(parts[0])
+        signature = base64.urlsafe_b64decode(parts[1])
 
         # Verify HMAC
         h = hmac.HMAC(HMAC_KEY, hashes.SHA256(), backend=default_backend())
@@ -429,7 +417,7 @@ def get_valid_usernames():
             if cached:
                 logger.debug("Retrieved usernames from Valkey cache")
                 return json.loads(cached)
-        response = requests.get(USER_TXT_URL)
+        response = requests.get(USER_TXT_URL, timeout=5)
         response.raise_for_status()
         usernames = [bleach.clean(line.strip()) for line in response.text.splitlines() if line.strip()]
         if valkey_client:
@@ -467,7 +455,7 @@ def block_suspicious_requests():
             logger.warning(f"Blocked suspicious request from {request.remote_addr}: {request.url}")
             abort(403, "Access Denied")
     except Exception as e:
-        logger.error(f"Error in block_suspicious_requests: {str(e)}")
+        logger.error(f"Error in block_suspicious_requests: {str(e)}", exc_info=True)
 
 @app.route("/login", methods=["GET", "POST"])
 @dynamic_rate_limit(base_limit=5, base_per=60)
@@ -542,7 +530,7 @@ def login():
             <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
                 <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
                     <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
-                    <p class="text-gray-600">Something went wrong. Please try again later.</p>
+                    <p class="text-gray-600">Something went wrong. Please try again later or check server logs.</p>
                 </div>
             </body>
             </html>
@@ -570,7 +558,7 @@ def index():
             <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
                 <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
                     <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
-                    <p class="text-gray-600">Something went wrong. Please try again later.</p>
+                    <p class="text-gray-600">Something went wrong. Please try again later or check server logs.</p>
                 </div>
             </body>
             </html>
@@ -801,7 +789,7 @@ def dashboard():
             <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
                 <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
                     <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
-                    <p class="text-gray-600">Something went wrong: {{ error }}</p>
+                    <p class="text-gray-600">Something went wrong. Please try again later or check server logs.</p>
                 </div>
             </body>
             </html>
@@ -881,11 +869,11 @@ def delete_url(url_id):
             <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
                 <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
                     <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
-                    <p class="text-gray-600">Something went wrong. Please try again later.</p>
+                    <p class="text-gray-600">Something went wrong. Please try again later or check server logs.</p>
                 </div>
             </body>
             </html>
-        """), 500
+        """, error=str(e)), 500
 
 @app.route("/<endpoint>/<path:encrypted_payload>/<path:path_segment>", methods=["GET"], subdomain="<username>")
 @dynamic_rate_limit(base_limit=5, base_per=60)
@@ -899,9 +887,12 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
         time.sleep(random.uniform(0.1, 0.5))
 
         if valkey_client:
-            analytics_enabled = valkey_client.hget(f"user:{username}:url:{url_id}", "analytics_enabled") == "1"
-            if analytics_enabled:
-                valkey_client.hincrby(f"user:{username}:url:{url_id}", "clicks", 1)
+            try:
+                analytics_enabled = valkey_client.hget(f"user:{username}:url:{url_id}", "analytics_enabled") == "1"
+                if analytics_enabled:
+                    valkey_client.hincrby(f"user:{username}:url:{url_id}", "clicks", 1)
+            except Exception as e:
+                logger.warning(f"Failed to update analytics: {str(e)}")
 
         encrypted_payload = urllib.parse.unquote(encrypted_payload)
         uuid_suffix_pattern = r'(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[0-9a-f]+)?$'
@@ -909,9 +900,12 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
 
         payload = None
         if valkey_client:
-            cached_payload = valkey_client.get(f"url_payload:{url_id}")
-            if cached_payload:
-                payload = cached_payload
+            try:
+                cached_payload = valkey_client.get(f"url_payload:{url_id}")
+                if cached_payload:
+                    payload = cached_payload
+            except Exception as e:
+                logger.warning(f"Failed to fetch cached payload: {str(e)}")
 
         if not payload:
             try:
@@ -974,7 +968,7 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                 <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
                     <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
                     <p class="text-gray-600">Something went wrong: {{ error }}</p>
-                    <p class="text-gray-600">Please try again later or contact support.</p>
+                    <p class="text-gray-600">Please try again later or check server logs.</p>
                 </div>
             </body>
             </html>
@@ -1003,7 +997,7 @@ def redirect_handler_no_subdomain(endpoint, encrypted_payload, path_segment):
                 <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
                     <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
                     <p class="text-gray-600">Something went wrong: {{ error }}</p>
-                    <p class="text-gray-600">Please try again later or contact support.</p>
+                    <p class="text-gray-600">Please try again later or check server logs.</p>
                 </div>
             </body>
             </html>
@@ -1033,7 +1027,7 @@ def catch_all(path):
 
 if __name__ == "__main__":
     try:
-        app.run(host="0.0.0.0", port=5000, debug=False)
+        app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=False)
     except Exception as e:
         logger.error(f"Error starting Flask app: {str(e)}", exc_info=True)
         sys.exit(1)
