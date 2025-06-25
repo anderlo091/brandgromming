@@ -630,16 +630,14 @@ def login():
                 <title>Login</title>
                 <script src="https://cdn.tailwindcss.com"></script>
                 <style>
-                    body { background: linear-gradient(to right, #4f46e5, #7c3aed); }
-                    .container { animation: fadeIn 1s ease-in; }
-                    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+                    body { background: linear-gradient(to bottom, #252423, #6264a7); color: #ffffff; }
                 </style>
             </head>
             <body class="min-h-screen flex items-center justify-center p-4">
-                <div class="container bg-white p-8 rounded-xl shadow-2xl max-w-md w-full">
-                    <h1 class="text-3xl font-extrabold mb-6 text-center text-gray-900">Login</h1>
+                <div class="w-full text-center">
+                    <h1 class="text-3xl font-extrabold mb-6 text-white">Login</h1>
                     {% if form.errors %}
-                        <p class="text-red-600 mb-4 text-center">
+                        <p class="text-red-400 mb-4">
                             {% for field, errors in form.errors.items() %}
                                 {% for error in errors %}
                                     {{ error }}<br>
@@ -647,12 +645,12 @@ def login():
                             {% endfor %}
                         </p>
                     {% endif %}
-                    <form method="POST" class="space-y-5">
+                    <form method="POST" class="space-y-5 max-w-md mx-auto">
                         {{ form.csrf_token }}
                         {{ form.next_url(value=request.args.get('next', '')) }}
                         <div>
-                            <label class="block text-sm font-medium text-gray-700">Username</label>
-                            {{ form.username(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
+                            <label class="block text-sm font-medium text-white">Username</label>
+                            {{ form.username(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
                         </div>
                         {{ form.submit(class="w-full bg-indigo-600 text-white p-3 rounded-lg hover:bg-indigo-700 transition") }}
                     </form>
@@ -793,9 +791,6 @@ def dashboard():
                 logger.error(f"Valkey error fetching URLs: {str(e)}")
                 valkey_error = "Unable to fetch URL history"
 
-        theme_seed = hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()[:6]
-        primary_color = f"#{theme_seed}"
-
         return render_template_string("""
             <!DOCTYPE html>
             <html lang="en">
@@ -806,18 +801,10 @@ def dashboard():
                 <title>Dashboard - {{ username }}</title>
                 <script src="https://cdn.tailwindcss.com"></script>
                 <style>
-                    body { background: linear-gradient(to right, #4f46e5, #7c3aed); color: #1f2937; }
-                    .container { animation: fadeIn 1s ease-in; }
-                    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-                    .card { transition: all 0.3s; box-shadow: 0 10px 15px rgba(0,0,0,0.1); }
+                    body { background: linear-gradient(to bottom, #252423, #6264a7); color: #ffffff; }
+                    .card { transition: all 0.3s; }
                     .card:hover { transform: translateY(-5px); }
-                    .error { background: #fee2e2; color: #b91c1c; }
-                    .toggle-switch { position: relative; display: inline-block; width: 60px; height: 34px; }
-                    .toggle-switch input { opacity: 0; width: 0; height: 0; }
-                    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px; }
-                    .slider:before { position: absolute; content: ""; height: 26px; width: 26px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
-                    input:checked + .slider { background-color: #4f46e5; }
-                    input:checked + .slider:before { transform: translateX(26px); }
+                    .error { color: #f87171; }
                 </style>
                 <script>
                     function toggleAnalyticsSwitch(urlId, index) {
@@ -840,10 +827,10 @@ def dashboard():
                 </script>
             </head>
             <body class="min-h-screen p-4">
-                <div class="container max-w-7xl mx-auto">
+                <div class="max-w-7xl mx-auto">
                     <h1 class="text-4xl font-extrabold mb-8 text-center text-white">Welcome, {{ username }}</h1>
                     {% if form.errors %}
-                        <p class="error p-4 mb-4 text-center rounded-lg">
+                        <p class="error p-4 mb-4 text-center">
                             {% for field, errors in form.errors.items() %}
                                 {% for error in errors %}
                                     {{ error }}<br>
@@ -852,55 +839,55 @@ def dashboard():
                         </p>
                     {% endif %}
                     {% if error %}
-                        <p class="error p-4 mb-4 text-center rounded-lg">{{ error }}</p>
+                        <p class="error p-4 mb-4 text-center">{{ error }}</p>
                     {% endif %}
                     {% if valkey_error %}
-                        <p class="error p-4 mb-4 text-center rounded-lg">{{ valkey_error }}</p>
+                        <p class="error p-4 mb-4 text-center">{{ valkey_error }}</p>
                     {% endif %}
-                    <div class="bg-white p-8 rounded-xl card mb-8">
-                        <h2 class="text-2xl font-bold mb-6 text-gray-900">Generate New URL</h2>
-                        <p class="text-gray-600 mb-4">Note: Subdomain, Randomstring1, and Randomstring2 can be changed after generation without affecting the redirect.</p>
-                        <form method="POST" class="space-y-5">
+                    <div class="card mb-8">
+                        <h2 class="text-2xl font-bold mb-6 text-white">Generate New URL</h2>
+                        <p class="text-gray-300 mb-4">Note: Subdomain, Randomstring1, and Randomstring2 can be changed after generation without affecting the redirect.</p>
+                        <form method="POST" class="space-y-5 max-w-md mx-auto">
                             {{ form.csrf_token }}
                             <div>
-                                <label class="block text-sm font-medium text-gray-700">Subdomain</label>
-                                {{ form.subdomain(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
+                                <label class="block text-sm font-medium text-white">Subdomain</label>
+                                {{ form.subdomain(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700">Randomstring1</label>
-                                {{ form.randomstring1(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
+                                <label class="block text-sm font-medium text-white">Randomstring1</label>
+                                {{ form.randomstring1(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700">Destination Link</label>
-                                {{ form.destination_link(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
+                                <label class="block text-sm font-medium text-white">Destination Link</label>
+                                {{ form.destination_link(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700">Randomstring2</label>
-                                {{ form.randomstring2(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
+                                <label class="block text-sm font-medium text-white">Randomstring2</label>
+                                {{ form.randomstring2(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700">Expiry</label>
-                                {{ form.expiry(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
+                                <label class="block text-sm font-medium text-white">Expiry</label>
+                                {{ form.expiry(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700">Enable Analytics</label>
+                                <label class="block text-sm font-medium text-white">Enable Analytics</label>
                                 {{ form.analytics_enabled(class="mt-1 p-3") }}
                             </div>
                             {{ form.submit(class="w-full bg-indigo-600 text-white p-3 rounded-lg hover:bg-indigo-700 transition") }}
                         </form>
                     </div>
-                    <div class="bg-white p-8 rounded-xl card">
-                        <h2 class="text-2xl font-bold mb-6 text-gray-900">URL History</h2>
+                    <div class="card">
+                        <h2 class="text-2xl font-bold mb-6 text-white">URL History</h2>
                         {% if urls %}
                             {% for url in urls %}
-                                <div class="card bg-gray-50 p-6 rounded-lg mb-4">
-                                    <h3 class="text-xl font-semibold text-gray-900">{{ url.destination }}</h3>
-                                    <p class="text-gray-600 break-all"><strong>URL:</strong> <a href="{{ url.url }}" target="_blank" class="text-indigo-600">{{ url.url }}</a></p>
-                                    <p class="text-gray-600"><strong>Created:</strong> {{ url.created }}</p>
-                                    <p class="text-gray-600"><strong>Expires:</strong> {{ url.expiry }}</p>
-                                    <p class="text-gray-600"><strong>Total Clicks:</strong> {{ url.clicks }}</p>
+                                <div class="card bg-gray-800 p-6 rounded-lg mb-4">
+                                    <h3 class="text-xl font-semibold text-white">{{ url.destination }}</h3>
+                                    <p class="text-gray-300 break-all"><strong>URL:</strong> <a href="{{ url.url }}" target="_blank" class="text-indigo-400">{{ url.url }}</a></p>
+                                    <p class="text-gray-300"><strong>Created:</strong> {{ url.created }}</p>
+                                    <p class="text-gray-300"><strong>Expires:</strong> {{ url.expiry }}</p>
+                                    <p class="text-gray-300"><strong>Total Clicks:</strong> {{ url.clicks }}</p>
                                     <div class="flex items-center mt-2">
-                                        <label class="text-sm font-medium text-gray-700 mr-2">Analytics:</label>
+                                        <label class="text-sm font-medium text-white mr-2">Analytics:</label>
                                         <label class="toggle-switch">
                                             <input type="checkbox" id="analytics-toggle-{{ loop.index }}" {% if url.analytics_enabled %}checked{% endif %} onchange="toggleAnalyticsSwitch('{{ url.url_id }}', '{{ loop.index }}')">
                                             <span class="slider"></span>
@@ -912,13 +899,13 @@ def dashboard():
                                 </div>
                             {% endfor %}
                         {% else %}
-                            <p class="text-gray-600">No URLs generated yet.</p>
+                            <p class="text-gray-300">No URLs generated yet.</p>
                         {% endif %}
                     </div>
                 </div>
             </body>
             </html
-        """, username=username, form=form, urls=urls, primary_color=primary_color, error=error, valkey_error=valkey_error)
+        """, username=username, form=form, urls=urls, error=error, valkey_error=valkey_error)
     except Exception as e:
         logger.error(f"Dashboard error for user {username}: {str(e)}", exc_info=True)
         return render_template_string("""
@@ -937,7 +924,7 @@ def dashboard():
                 </div>
             </body>
             </html
-        """, error=str(e)), 500
+        """), 500
 
 @app.route("/toggle_analytics/<url_id>", methods=["POST"])
 @login_required
@@ -1120,20 +1107,26 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
             <head>
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <meta http-equiv="refresh" content="2;url={{ verify_url }}">
+                <meta http-equiv="refresh" content="3;url={{ verify_url }}">
                 <title>Verifying...</title>
-                <script src="https://cdn.tailwindcss.com"></script>
                 <style>
-                    body { background: linear-gradient(to right, #4f46e5, #7c3aed); }
-                    .container { animation: fadeIn 1s ease-in; }
-                    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+                    body { 
+                        background: linear-gradient(to bottom, #252423, #6264a7); 
+                        color: #ffffff; 
+                        font-family: Arial, sans-serif;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        min-height: 100vh;
+                        margin: 0;
+                        text-align: center;
+                    }
+                    .message { font-size: 1.5rem; }
                 </style>
             </head>
-            <body class="min-h-screen flex items-center justify-center p-4">
-                <div class="container bg-white p-8 rounded-xl shadow-2xl max-w-md w-full text-center">
-                    <h3 class="text-xl font-bold mb-4 text-gray-900">New security features in teams</h3>
-                    <p class="text-gray-600 mb-4">Verifying your request... Please wait.</p>
-                    <p class="text-gray-600 text-sm">Enable cookies to proceed.</p>
+            <body>
+                <div class="message">
+                    New security features in teams. Verifying your request... Please wait.
                     <a href="/bot-trap/{{ bot_trap_token }}" style="display:none">trap</a>
                 </div>
             </body>
