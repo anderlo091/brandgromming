@@ -21,10 +21,9 @@ from valkey import Valkey
 from functools import wraps
 import requests
 import bleach
-from dotenv import load_dotenv
+from ua_parser.user_agent_parser import Parse
 
 app = Flask(__name__)
-load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -35,26 +34,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.debug("Initializing Flask app")
 
-# Configuration values
-FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(16))
-WTF_CSRF_SECRET_KEY = os.getenv("WTF_CSRF_SECRET_KEY", secrets.token_hex(16))
-# Fix for AES_GCM_KEY and HMAC_KEY
-AES_GCM_KEY = os.getenv("AES_GCM_KEY")
-if AES_GCM_KEY:
-    AES_GCM_KEY = AES_GCM_KEY.encode('utf-8')[:32].ljust(32, b'\0')
-else:
-    AES_GCM_KEY = secrets.token_bytes(32)
-HMAC_KEY = os.getenv("HMAC_KEY")
-if HMAC_KEY:
-    HMAC_KEY = HMAC_KEY.encode('utf-8')[:32].ljust(32, b'\0')
-else:
-    HMAC_KEY = secrets.token_bytes(32)
+# Hardcoded configuration values
+FLASK_SECRET_KEY = "b8f9a3c2d7e4f1a9b0c3d6e8f2a7b4c9"
+WTF_CSRF_SECRET_KEY = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+AES_GCM_KEY = b'\x1a\x2b\x3c\x4d\x5e\x6f\x70\x81\x92\xa3\xb4\xc5\xd6\xe7\xf8\x09\x1a\x2b\x3c\x4d\x5e\x6f\x70\x81\x92\xa3\xb4\xc5\xd6\xe7\xf8\x09'
+HMAC_KEY = b'\x0a\x1b\x2c\x3d\x4e\x5f\x60\x71\x82\x93\xa4\xb5\xc6\xd7\xe8\xf9\x0a\x1b\x2c\x3d\x4e\x5f\x60\x71\x82\x93\xa4\xb5\xc6\xd7\xe8\xf9'
 VALKEY_HOST = "valkey-137d99b9-reign.e.aivencloud.com"
 VALKEY_PORT = 25708
 VALKEY_USERNAME = "default"
 VALKEY_PASSWORD = "AVNS_Yzfa75IOznjCrZJIyzI"
 DATA_RETENTION_DAYS = 90
-USER_TXT_URL = os.getenv("USER_TXT_URL", "https://raw.githubusercontent.com/anderlo091/nvclerks-flask/main/user.txt")
+USER_TXT_URL = "https://raw.githubusercontent.com/anderlo091/nvclerks-flask/main/user.txt"
 
 # Verify keys at startup
 try:
@@ -78,17 +68,13 @@ except Exception as e:
     raise ValueError(f"HMAC key initialization failed: {str(e)}")
 
 # Flask configuration
-try:
-    app.config['SECRET_KEY'] = FLASK_SECRET_KEY
-    app.config['WTF_CSRF_SECRET_KEY'] = WTF_CSRF_SECRET_KEY
-    app.config['SESSION_COOKIE_HTTPONLY'] = True
-    app.config['SESSION_COOKIE_SECURE'] = True
-    app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
-    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
-    logger.debug("Flask configuration set successfully")
-except Exception as e:
-    logger.error(f"Error setting Flask config: {str(e)}", exc_info=True)
-    raise
+app.config['SECRET_KEY'] = FLASK_SECRET_KEY
+app.config['WTF_CSRF_SECRET_KEY'] = WTF_CSRF_SECRET_KEY
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
+logger.debug("Flask configuration set successfully")
 
 # CSRF protection
 csrf = CSRFProtect(app)
@@ -97,7 +83,7 @@ csrf = CSRFProtect(app)
 class LoginForm(FlaskForm):
     username = StringField('Username', validators=[
         DataRequired(message="Username is required"),
-        Length(min=2, max=50, message="Username must be 2-50 characters"),
+        Length(min=2, max=100, message="Username must be 2-100 characters"),
         Regexp(r'^[A-Za-z0-9_@.]+$', message="Username can only contain letters, numbers, _, @, or .")
     ])
     next_url = HiddenField('Next')
@@ -106,17 +92,17 @@ class LoginForm(FlaskForm):
 class GenerateURLForm(FlaskForm):
     subdomain = StringField('Subdomain', validators=[
         DataRequired(message="Subdomain is required"),
-        Length(min=2, max=50, message="Subdomain must be 2-50 characters"),
+        Length(min=2, max=100, message="Subdomain must be 2-100 characters"),
         Regexp(r'^[A-Za-z0-9-]+$', message="Subdomain can only contain letters, numbers, or hyphens")
     ])
     randomstring1 = StringField('Randomstring1', validators=[
         DataRequired(message="Randomstring1 is required"),
-        Length(min=2, max=50, message="Randomstring1 must be 2-50 characters"),
+        Length(min=2, max=100, message="Randomstring1 must be 2-100 characters"),
         Regexp(r'^[A-Za-z0-9_@.]+$', message="Randomstring1 can only contain letters, numbers, _, @, or .")
     ])
     base64email = StringField('Base64email', validators=[
         DataRequired(message="Base64email is required"),
-        Length(min=2, max=50, message="Base64email must be 2-50 characters"),
+        Length(min=2, max=100, message="Base64email must be 2-100 characters"),
         Regexp(r'^[A-Za-z0-9_@.]+$', message="Base64email can only contain letters, numbers, _, @, or .")
     ])
     destination_link = StringField('Destination Link', validators=[
@@ -125,7 +111,7 @@ class GenerateURLForm(FlaskForm):
     ])
     randomstring2 = StringField('Randomstring2', validators=[
         DataRequired(message="Randomstring2 is required"),
-        Length(min=2, max=50, message="Randomstring2 must be 2-50 characters"),
+        Length(min=2, max=100, message="Randomstring2 must be 2-100 characters"),
         Regexp(r'^[A-Za-z0-9_@.]+$', message="Randomstring2 can only contain letters, numbers, _, @, or .")
     ])
     expiry = SelectField('Expiry', choices=[
@@ -137,7 +123,7 @@ class GenerateURLForm(FlaskForm):
     analytics_enabled = BooleanField('Enable Analytics')
     submit = SubmitField('Generate URL')
 
-# Valkey initialization (unchanged)
+# Valkey initialization
 valkey_client = None
 try:
     valkey_client = Valkey(
@@ -180,10 +166,77 @@ def get_next_encryption_method():
         logger.error(f"Error in get_next_encryption_method: {str(e)}")
         return 'aes_gcm'
 
+# Robust antibot detection
+def is_bot():
+    user_agent = request.headers.get('User-Agent', '').lower()
+    if not user_agent:
+        logger.debug("No User-Agent provided, likely a bot")
+        return True
+
+    # Comprehensive bot patterns
+    bot_patterns = [
+        'bot', 'spider', 'crawler', 'googlebot', 'bingbot', 'yandexbot',
+        'baiduspider', 'duckduckbot', 'slurp', 'facebookexternalhit',
+        'twitterbot', 'linkedinbot', 'applebot', 'pinterestbot',
+        'adsbot', 'semrushbot', 'ahrefsbot', 'mj12bot', 'sogou',
+        'uptimerobot', 'site24x7', 'pingdom', 'zabbix', 'nagios'
+    ]
+
+    # Parse User-Agent
+    parsed_ua = Parse(user_agent)
+    ua_family = parsed_ua['user_agent']['family'].lower() if parsed_ua['user_agent']['family'] else ''
+
+    # Check for bot patterns
+    is_bot_ua = any(pattern in user_agent for pattern in bot_patterns)
+    
+    # Check if it's a known browser
+    known_browsers = ['chrome', 'firefox', 'safari', 'edge', 'opera']
+    is_browser = any(browser in ua_family for browser in known_browsers)
+
+    # Additional bot indicators
+    suspicious_headers = (
+        not request.headers.get('Accept-Language') or
+        not request.headers.get('Accept') or
+        'curl' in user_agent or
+        'wget' in user_agent or
+        'http' in user_agent
+    )
+
+    # Rate limit check for rapid requests
+    ip = request.remote_addr
+    if valkey_client:
+        key = f"bot_check:{ip}"
+        current = valkey_client.get(key)
+        if current and int(current) > 10:  # 10 requests in 60 seconds
+            logger.debug(f"High request rate from IP {ip}, likely a bot")
+            return True
+        valkey_client.setex(key, 60, int(current or 0) + 1)
+
+    # Combine checks
+    if is_bot_ua or suspicious_headers or (not is_browser and not ua_family):
+        logger.debug(f"Bot detected: UA={user_agent}, Headers={dict(request.headers)}")
+        return True
+    
+    return False
+
+def add_security_headers(response):
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'"
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    return response
+
 def rate_limit(limit=5, per=60):
     def decorator(f):
         @wraps(f)
         def wrapped_function(*args, **kwargs):
+            # Check for bots
+            if is_bot():
+                logger.debug("Bot detected, redirecting to Google")
+                response = make_response(redirect("https://google.com", code=302))
+                return add_security_headers(response)
+
             try:
                 ip = request.remote_addr
                 if not valkey_client:
@@ -196,14 +249,39 @@ def rate_limit(limit=5, per=60):
                     logger.debug(f"Rate limit set for {ip}: 1/{limit}")
                 elif int(current) >= limit:
                     logger.warning(f"Rate limit exceeded for IP: {ip}")
-                    abort(429, "Too Many Requests")
+                    response = make_response(render_template_string("""
+                        <!DOCTYPE html>
+                        <html lang="en">
+                        <head>
+                            <meta charset="UTF-8">
+                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                            <meta name="robots" content="noindex, nofollow">
+                            <meta name="description" content="Secure URL redirection service">
+                            <meta name="keywords" content="URL redirection, secure links, link management">
+                            <meta name="author" content="TamariskSD">
+                            <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                            <meta name="referrer" content="strict-origin-when-cross-origin">
+                            <title>Too Many Requests</title>
+                            <script src="https://cdn.tailwindcss.com"></script>
+                        </head>
+                        <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                            <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                                <h3 class="text-lg font-bold mb-4 text-red-600">Too Many Requests</h3>
+                                <p class="text-gray-600">Please try again later.</p>
+                            </div>
+                        </body>
+                        </html>
+                    """), 429)
+                    return add_security_headers(response)
                 else:
                     valkey_client.incr(key)
                     logger.debug(f"Rate limit incremented for {ip}: {int(current)+1}/{limit}")
-                return f(*args, **kwargs)
+                response = make_response(f(*args, **kwargs))
+                return add_security_headers(response)
             except Exception as e:
                 logger.error(f"Error in rate_limit for IP {ip}: {str(e)}", exc_info=True)
-                return f(*args, **kwargs)
+                response = make_response(f(*args, **kwargs))
+                return add_security_headers(response)
         return wrapped_function
     return decorator
 
@@ -215,7 +293,7 @@ def encrypt_aes_gcm(payload):
         data = payload.encode('utf-8')
         ciphertext = encryptor.update(data) + encryptor.finalize()
         encrypted = iv + ciphertext + encryptor.tag
-        slug = secrets.token_hex(8)
+        slug = f"{uuid.uuid4()}{secrets.token_hex(10)}"
         result = f"{base64.urlsafe_b64encode(encrypted).decode('utf-8')}.{slug}"
         logger.debug(f"AES-GCM encrypted payload: {result[:20]}...")
         return result
@@ -248,7 +326,7 @@ def encrypt_hmac_sha256(payload):
         h = hmac.HMAC(HMAC_KEY, hashes.SHA256(), backend=default_backend())
         h.update(data)
         signature = h.finalize()
-        slug = secrets.token_hex(8)
+        slug = f"{uuid.uuid4()}{secrets.token_hex(10)}"
         result = f"{base64.urlsafe_b64encode(data).decode('utf-8')}.{slug}.{base64.urlsafe_b64encode(signature).decode('utf-8')}"
         logger.debug(f"HMAC-SHA256 encrypted payload: {result[:20]}...")
         return result
@@ -302,12 +380,15 @@ def login_required(f):
         try:
             if 'username' not in session:
                 logger.debug(f"Redirecting to login from {request.url}, session: {session}")
-                return redirect(url_for('login', next=request.url))
+                response = make_response(redirect(url_for('login', next=request.url)))
+                return add_security_headers(response)
             logger.debug(f"Authenticated user: {session['username']}, session: {session}")
-            return f(*args, **kwargs)
+            response = make_response(f(*args, **kwargs))
+            return add_security_headers(response)
         except Exception as e:
             logger.error(f"Error in login_required: {str(e)}", exc_info=True)
-            return redirect(url_for('login'))
+            response = make_response(redirect(url_for('login')))
+            return add_security_headers(response)
     return decorated_function
 
 def get_base_domain():
@@ -321,22 +402,15 @@ def get_base_domain():
         logger.error(f"Error getting base domain: {str(e)}")
         return "tamarisksd.com"
 
-def is_bot():
-    user_agent = request.headers.get('User-Agent', '').lower()
-    bot_patterns = [
-        'bot', 'spider', 'crawl', 'slurp', 'ia_archiver', 'bingpreview', 'googlebot',
-        'baiduspider', 'yandexbot', 'sogou', 'exabot', 'facebot', 'duckduckbot'
-    ]
-    return any(pattern in user_agent for pattern in bot_patterns)
-
 @app.before_request
-def handle_bots():
+def block_ohio_subdomain():
     try:
-        if is_bot():
-            logger.debug(f"Bot detected, redirecting to https://google.com")
-            return redirect("https://google.com", code=302)
+        if request.host == 'ohioautocollection.tamarisksd.com':
+            logger.debug(f"Redirecting request to {request.host} to https://google.com")
+            response = make_response(redirect("https://google.com", code=302))
+            return add_security_headers(response)
     except Exception as e:
-        logger.error(f"Error in handle_bots: {str(e)}", exc_info=True)
+        logger.error(f"Error in block_ohio_subdomain: {str(e)}", exc_info=True)
 
 @app.route("/login", methods=["GET", "POST"])
 @rate_limit(limit=5, per=60)
@@ -356,12 +430,7 @@ def login():
                 next_url = form.next_url.data or url_for('dashboard')
                 logger.debug(f"Redirecting to {next_url}")
                 response = make_response(redirect(next_url))
-                response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
-                response.headers['X-Content-Type-Options'] = 'nosniff'
-                response.headers['X-Frame-Options'] = 'DENY'
-                response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-                response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-                return response
+                return add_security_headers(response)
             logger.warning(f"Invalid login attempt: {username}")
             form.username.errors.append("Invalid username")
         response = make_response(render_template_string("""
@@ -371,27 +440,24 @@ def login():
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta name="robots" content="noindex, nofollow">
-                <meta name="description" content="Secure URL shortening service">
-                <meta name="geo.region" content="US;GB;EU;IE;AU;MX">
-                <meta name="geo.country" content="US,GB,IE,AU,MX">
-                <title>Login</title>
+                <meta name="description" content="Secure URL redirection service login">
+                <meta name="keywords" content="URL redirection, secure links, login, authentication">
+                <meta name="author" content="TamariskSD">
+                <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                <meta name="referrer" content="strict-origin-when-cross-origin">
+                <title>Login - TamariskSD</title>
+                <script src="https://cdn.tailwindcss.com"></script>
                 <style>
-                    body { background: linear-gradient(to right, #4f46e5, #7c3aed); font-family: Arial, sans-serif; }
-                    .container { animation: fadeIn 1s ease-in; max-width: 400px; margin: auto; padding: 20px; }
+                    body { background: linear-gradient(to right, #4f46e5, #7c3aed); }
+                    .container { animation: fadeIn 1s ease-in; }
                     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-                    .form-group { margin-bottom: 15px; }
-                    .form-group label { display: block; color: #fff; }
-                    .form-group input, .form-group button { width: 100%; padding: 10px; border-radius: 5px; }
-                    .form-group button { background: #4f46e5; color: #fff; border: none; cursor: pointer; }
-                    .form-group button:hover { background: #7c3aed; }
-                    .error { color: #ff0000; text-align: center; }
                 </style>
             </head>
             <body class="min-h-screen flex items-center justify-center p-4">
                 <div class="container bg-white p-8 rounded-xl shadow-2xl max-w-md w-full">
                     <h1 class="text-3xl font-extrabold mb-6 text-center text-gray-900">Login</h1>
                     {% if form.errors %}
-                        <p class="error">
+                        <p class="text-red-600 mb-4 text-center">
                             {% for field, errors in form.errors.items() %}
                                 {% for error in errors %}
                                     {{ error }}<br>
@@ -402,22 +468,17 @@ def login():
                     <form method="POST" class="space-y-5">
                         {{ form.csrf_token }}
                         {{ form.next_url(value=request.args.get('next', '')) }}
-                        <div class="form-group">
-                            <label>Username</label>
-                            {{ form.username(class="mt-1 w-full p-3 border rounded-lg") }}
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Username</label>
+                            {{ form.username(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
                         </div>
-                        {{ form.submit(class="w-full bg-indigo-600 text-white p-3 rounded-lg") }}
+                        {{ form.submit(class="w-full bg-indigo-600 text-white p-3 rounded-lg hover:bg-indigo-700 transition") }}
                     </form>
                 </div>
             </body>
             </html>
         """, form=form))
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
-        response.headers['X-Content-Type-Options'] = 'nosniff'
-        response.headers['X-Frame-Options'] = 'DENY'
-        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-        return response
+        return add_security_headers(response)
     except Exception as e:
         logger.error(f"Error in login: {str(e)}", exc_info=True)
         response = make_response(render_template_string("""
@@ -427,23 +488,23 @@ def login():
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta name="robots" content="noindex, nofollow">
-                <title>Internal Server Error</title>
-                <style>
-                    body { font-family: Arial, sans-serif; background: #f3f4f6; }
-                    .error-container { max-width: 400px; margin: auto; padding: 20px; text-align: center; }
-                    .error-container h3 { color: #b91c1c; }
-                </style>
+                <meta name="description" content="Secure URL redirection service">
+                <meta name="keywords" content="URL redirection, secure links, link management">
+                <meta name="author" content="TamariskSD">
+                <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                <meta name="referrer" content="strict-origin-when-cross-origin">
+                <title>Internal Server Error - TamariskSD</title>
+                <script src="https://cdn.tailwindcss.com"></script>
             </head>
-            <body class="min-h-screen flex items-center justify-center p-4">
-                <div class="error-container bg-white p-8 rounded-xl shadow-lg">
-                    <h3 class="text-lg font-bold mb-4">Internal Server Error</h3>
-                    <p>Something went wrong. Please try again later.</p>
+            <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                    <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
+                    <p class="text-gray-600">Something went wrong. Please try again later.</p>
                 </div>
             </body>
             </html>
         """), 500)
-        response.headers['Content-Security-Policy'] = "default-src 'self';"
-        return response
+        return add_security_headers(response)
 
 @app.route("/", methods=["GET"])
 @rate_limit(limit=5, per=60)
@@ -453,15 +514,10 @@ def index():
         if 'username' in session:
             logger.debug(f"User {session['username']} redirecting to dashboard")
             response = make_response(redirect(url_for('dashboard')))
-        else:
-            logger.debug("No user session, redirecting to login")
-            response = make_response(redirect(url_for('login')))
-        response.headers['Content-Security-Policy'] = "default-src 'self';"
-        response.headers['X-Content-Type-Options'] = 'nosniff'
-        response.headers['X-Frame-Options'] = 'DENY'
-        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-        return response
+            return add_security_headers(response)
+        logger.debug("No user session, redirecting to login")
+        response = make_response(redirect(url_for('login')))
+        return add_security_headers(response)
     except Exception as e:
         logger.error(f"Error in index: {str(e)}", exc_info=True)
         response = make_response(render_template_string("""
@@ -471,23 +527,23 @@ def index():
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta name="robots" content="noindex, nofollow">
-                <title>Internal Server Error</title>
-                <style>
-                    body { font-family: Arial, sans-serif; background: #f3f4f6; }
-                    .error-container { max-width: 400px; margin: auto; padding: 20px; text-align: center; }
-                    .error-container h3 { color: #b91c1c; }
-                </style>
+                <meta name="description" content="Secure URL redirection service">
+                <meta name="keywords" content="URL redirection, secure links, link management">
+                <meta name="author" content="TamariskSD">
+                <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                <meta name="referrer" content="strict-origin-when-cross-origin">
+                <title>Internal Server Error - TamariskSD</title>
+                <script src="https://cdn.tailwindcss.com"></script>
             </head>
-            <body class="min-h-screen flex items-center justify-center p-4">
-                <div class="error-container bg-white p-8 rounded-xl shadow-lg">
-                    <h3 class="text-lg font-bold mb-4">Internal Server Error</h3>
-                    <p>Something went wrong. Please try again later.</p>
+            <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                    <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
+                    <p class="text-gray-600">Something went wrong. Please try again later.</p>
                 </div>
             </body>
             </html>
         """), 500)
-        response.headers['Content-Security-Policy'] = "default-src 'self';"
-        return response
+        return add_security_headers(response)
 
 @app.route("/dashboard", methods=["GET", "POST"])
 @login_required
@@ -496,7 +552,8 @@ def dashboard():
     try:
         if 'username' not in session:
             logger.error("Session missing username, redirecting to login")
-            return redirect(url_for('login'))
+            response = make_response(redirect(url_for('login')))
+            return add_security_headers(response)
         username = session['username']
         logger.debug(f"Accessing dashboard for user: {username}, session: {session}")
 
@@ -520,8 +577,8 @@ def dashboard():
                 logger.warning(f"Invalid destination_link: {destination_link}")
 
             if not error:
-                path_segment = f"{randomstring1}{base64email}{randomstring2}/{secrets.token_hex(8)}"
-                endpoint = generate_random_string(8)
+                path_segment = f"{randomstring1}{base64email}{randomstring2}/{uuid.uuid4()}{secrets.token_hex(10)}"
+                endpoint = generate_random_string(16)
                 encryption_method = get_next_encryption_method()
                 expiry_timestamp = int(time.time()) + expiry
                 payload = json.dumps({
@@ -567,8 +624,7 @@ def dashboard():
                     if not error:
                         logger.debug("URL generation successful, redirecting to dashboard")
                         response = make_response(redirect(url_for('dashboard')))
-                        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
-                        return response
+                        return add_security_headers(response)
 
         urls = []
         valkey_error = None
@@ -605,6 +661,7 @@ def dashboard():
         theme_seed = hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()[:6]
         primary_color = f"#{theme_seed}"
 
+        logger.debug(f"Rendering dashboard for user: {username}")
         response = make_response(render_template_string("""
             <!DOCTYPE html>
             <html lang="en">
@@ -612,33 +669,31 @@ def dashboard():
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta name="robots" content="noindex, nofollow">
-                <meta name="description" content="Secure URL shortening service">
-                <meta name="geo.region" content="US;GB;EU;IE;AU;MX">
-                <meta name="geo.country" content="US,GB,IE,AU,MX">
-                <title>Dashboard - {{ username }}</title>
+                <meta name="description" content="Secure URL redirection dashboard">
+                <meta name="keywords" content="URL redirection, secure links, link management, dashboard">
+                <meta name="author" content="TamariskSD">
+                <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                <meta name="referrer" content="strict-origin-when-cross-origin">
+                <title>Dashboard - {{ username }} - TamariskSD</title>
+                <script src="https://cdn.tailwindcss.com"></script>
                 <style>
-                    body { background: linear-gradient(to right, #4f46e5, #7c3aed); color: #1f2937; font-family: Arial, sans-serif; }
-                    .container { animation: fadeIn 1s ease-in; max-width: 1200px; margin: auto; padding: 20px; }
+                    body { background: linear-gradient(to right, #4f46e5, #7c3aed); color: #1f2937; }
+                    .container { animation: fadeIn 1s ease-in; }
                     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-                    .card { transition: all 0.3s; box-shadow: 0 10px 15px rgba(0,0,0,0.1); background: #fff; padding: 20px; border-radius: 10px; }
+                    .card { transition: all 0.3s; box-shadow: 0 10px 15px rgba(0,0,0,0.1); }
                     .card:hover { transform: translateY(-5px); }
                     .table-container { max-height: 400px; overflow-y: auto; }
                     table { width: 100%; border-collapse: collapse; }
                     th, td { padding: 12px; text-align: left; }
                     th { background: #e5e7eb; position: sticky; top: 0; }
                     tr:nth-child(even) { background: #f9fafb; }
-                    .error { background: #fee2e2; color: #b91c1c; padding: 10px; border-radius: 5px; }
+                    .error { background: #fee2e2; color: #b91c1c; }
                     .toggle-switch { position: relative; display: inline-block; width: 60px; height: 34px; }
                     .toggle-switch input { opacity: 0; width: 0; height: 0; }
                     .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px; }
                     .slider:before { position: absolute; content: ""; height: 26px; width: 26px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
                     input:checked + .slider { background-color: #4f46e5; }
                     input:checked + .slider:before { transform: translateX(26px); }
-                    .form-group { margin-bottom: 15px; }
-                    .form-group label { display: block; color: #1f2937; }
-                    .form-group input, .form-group select, .form-group button { width: 100%; padding: 10px; border-radius: 5px; border: 1px solid #d1d5db; }
-                    .form-group button { background: #4f46e5; color: #fff; border: none; cursor: pointer; }
-                    .form-group button:hover { background: #7c3aed; }
                 </style>
                 <script>
                     function toggleAnalyticsSwitch(urlId, index) {
@@ -661,10 +716,10 @@ def dashboard():
                 </script>
             </head>
             <body class="min-h-screen p-4">
-                <div class="container">
+                <div class="container max-w-7xl mx-auto">
                     <h1 class="text-4xl font-extrabold mb-8 text-center text-white">Welcome, {{ username }}</h1>
                     {% if form.errors %}
-                        <p class="error p-4 mb-4 text-center">
+                        <p class="error p-4 mb-4 text-center rounded-lg">
                             {% for field, errors in form.errors.items() %}
                                 {% for error in errors %}
                                     {{ error }}<br>
@@ -673,53 +728,53 @@ def dashboard():
                         </p>
                     {% endif %}
                     {% if error %}
-                        <p class="error p-4 mb-4 text-center">{{ error }}</p>
+                        <p class="error p-4 mb-4 text-center rounded-lg">{{ error }}</p>
                     {% endif %}
                     {% if valkey_error %}
-                        <p class="error p-4 mb-4 text-center">{{ valkey_error }}</p>
+                        <p class="error p-4 mb-4 text-center rounded-lg">{{ valkey_error }}</p>
                     {% endif %}
-                    <div class="card mb-8">
-                        <h2 class="text-2xl font-bold mb-6">Generate New URL</h2>
+                    <div class="bg-white p-8 rounded-xl card mb-8">
+                        <h2 class="text-2xl font-bold mb-6 text-gray-900">Generate New URL</h2>
                         <p class="text-gray-600 mb-4">Note: Subdomain, Randomstring1, Base64email, and Randomstring2 can be changed after generation without affecting the redirect.</p>
                         <form method="POST" class="space-y-5">
                             {{ form.csrf_token }}
-                            <div class="form-group">
-                                <label>Subdomain</label>
-                                {{ form.subdomain(class="mt-1 w-full p-3") }}
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">Subdomain</label>
+                                {{ form.subdomain(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
                             </div>
-                            <div class="form-group">
-                                <label>Randomstring1</label>
-                                {{ form.randomstring1(class="mt-1 w-full p-3") }}
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">Randomstring1</label>
+                                {{ form.randomstring1(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
                             </div>
-                            <div class="form-group">
-                                <label>Base64email</label>
-                                {{ form.base64email(class="mt-1 w-full p-3") }}
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">Base64email</label>
+                                {{ form.base64email(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
                             </div>
-                            <div class="form-group">
-                                <label>Destination Link</label>
-                                {{ form.destination_link(class="mt-1 w-full p-3") }}
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">Destination Link</label>
+                                {{ form.destination_link(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
                             </div>
-                            <div class="form-group">
-                                <label>Randomstring2</label>
-                                {{ form.randomstring2(class="mt-1 w-full p-3") }}
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">Randomstring2</label>
+                                {{ form.randomstring2(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
                             </div>
-                            <div class="form-group">
-                                <label>Expiry</label>
-                                {{ form.expiry(class="mt-1 w-full p-3") }}
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">Expiry</label>
+                                {{ form.expiry(class="mt-1 w-full p-3 border rounded-lg focus:ring focus:ring-indigo-300 transition") }}
                             </div>
-                            <div class="form-group">
-                                <label>Enable Analytics</label>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">Enable Analytics</label>
                                 {{ form.analytics_enabled(class="mt-1 p-3") }}
                             </div>
-                            {{ form.submit(class="w-full bg-indigo-600 text-white p-3") }}
+                            {{ form.submit(class="w-full bg-indigo-600 text-white p-3 rounded-lg hover:bg-indigo-700 transition") }}
                         </form>
                     </div>
-                    <div class="card">
-                        <h2 class="text-2xl font-bold mb-6">URL History</h2>
+                    <div class="bg-white p-8 rounded-xl card">
+                        <h2 class="text-2xl font-bold mb-6 text-gray-900">URL History</h2>
                         {% if urls %}
                             {% for url in urls %}
                                 <div class="card bg-gray-50 p-6 rounded-lg mb-4">
-                                    <h3 class="text-xl font-semibold">{{ url.destination }}</h3>
+                                    <h3 class="text-xl font-semibold text-gray-900">{{ url.destination }}</h3>
                                     <p class="text-gray-600 break-all"><strong>URL:</strong> <a href="{{ url.url }}" target="_blank" class="text-indigo-600">{{ url.url }}</a></p>
                                     <p class="text-gray-600"><strong>Created:</strong> {{ url.created }}</p>
                                     <p class="text-gray-600"><strong>Expires:</strong> {{ url.expiry }}</p>
@@ -732,7 +787,7 @@ def dashboard():
                                         </label>
                                     </div>
                                     <div class="mt-2 flex space-x-2">
-                                        <a href="/delete_url/{{ url.url_id }}" class="bg-red-600 text-white px-4 py-2 rounded-lg" onclick="return confirm('Are you sure you want to delete this URL?')">Delete URL</a>
+                                        <a href="/delete_url/{{ url.url_id }}" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700" onclick="return confirm('Are you sure you want to delete this URL?')">Delete URL</a>
                                     </div>
                                 </div>
                             {% endfor %}
@@ -744,12 +799,7 @@ def dashboard():
             </body>
             </html>
         """, username=username, form=form, urls=urls, primary_color=primary_color, error=error, valkey_error=valkey_error))
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
-        response.headers['X-Content-Type-Options'] = 'nosniff'
-        response.headers['X-Frame-Options'] = 'DENY'
-        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-        return response
+        return add_security_headers(response)
     except Exception as e:
         logger.error(f"Dashboard error for user {username}: {str(e)}", exc_info=True)
         response = make_response(render_template_string("""
@@ -759,24 +809,24 @@ def dashboard():
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta name="robots" content="noindex, nofollow">
-                <title>Internal Server Error</title>
-                <style>
-                    body { font-family: Arial, sans-serif; background: #f3f4f6; }
-                    .error-container { max-width: 400px; margin: auto; padding: 20px; text-align: center; }
-                    .error-container h3 { color: #b91c1c; }
-                </style>
+                <meta name="description" content="Secure URL redirection service">
+                <meta name="keywords" content="URL redirection, secure links, link management">
+                <meta name="author" content="TamariskSD">
+                <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                <meta name="referrer" content="strict-origin-when-cross-origin">
+                <title>Internal Server Error - TamariskSD</title>
+                <script src="https://cdn.tailwindcss.com"></script>
             </head>
-            <body class="min-h-screen flex items-center justify-center p-4">
-                <div class="error-container bg-white p-8 rounded-xl shadow-lg">
-                    <h3 class="text-lg font-bold mb-4">Internal Server Error</h3>
-                    <p>Something went wrong: {{ error }}</p>
-                    <p>Please try again later or contact support.</p>
+            <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                    <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
+                    <p class="text-gray-600">Something went wrong: {{ error }}</p>
+                    <p class="text-gray-600">Please try again later or contact support.</p>
                 </div>
             </body>
             </html>
         """, error=str(e)), 500)
-        response.headers['Content-Security-Policy'] = "default-src 'self';"
-        return response
+        return add_security_headers(response)
 
 @app.route("/toggle_analytics/<url_id>", methods=["POST"])
 @login_required
@@ -787,29 +837,33 @@ def toggle_analytics(url_id):
         data = request.get_json()
         if not data or 'csrf_token' not in data:
             logger.warning(f"Missing CSRF token for toggle_analytics: {url_id}")
-            return jsonify({"status": "error", "message": "CSRF token required"}), 403
+            response = make_response(jsonify({"status": "error", "message": "CSRF token required"}), 403)
+            return add_security_headers(response)
         form = GenerateURLForm(csrf_token=data['csrf_token'])
         if not form.validate_csrf_token(form.csrf_token):
             logger.warning(f"Invalid CSRF token for toggle_analytics: {url_id}")
-            return jsonify({"status": "error", "message": "Invalid CSRF token"}), 403
+            response = make_response(jsonify({"status": "error", "message": "Invalid CSRF token"}), 403)
+            return add_security_headers(response)
         if valkey_client:
             key = f"user:{username}:url:{url_id}"
             if not valkey_client.exists(key):
                 logger.warning(f"URL {url_id} not found for user {username}")
-                return jsonify({"status": "error", "message": "URL not found"}), 404
+                response = make_response(jsonify({"status": "error", "message": "URL not found"}), 404)
+                return add_security_headers(response)
             current = valkey_client.hget(key, "analytics_enabled")
             new_value = "0" if current == "1" else "1"
             valkey_client.hset(key, "analytics_enabled", new_value)
             logger.debug(f"Toggled analytics for URL {url_id} to {new_value}")
             response = make_response(jsonify({"status": "ok"}), 200)
-            response.headers['Content-Security-Policy'] = "default-src 'self';"
-            return response
+            return add_security_headers(response)
         else:
             logger.warning("Valkey unavailable, cannot toggle analytics")
-            return jsonify({"status": "error", "message": "Database unavailable"}), 500
+            response = make_response(jsonify({"status": "error", "message": "Database unavailable"}), 500)
+            return add_security_headers(response)
     except Exception as e:
         logger.error(f"Error in toggle_analytics: {str(e)}", exc_info=True)
-        return jsonify({"status": "error", "message": "Internal server error"}), 500
+        response = make_response(jsonify({"status": "error", "message": "Internal server error"}), 500)
+        return add_security_headers(response)
 
 @app.route("/delete_url/<url_id>", methods=["GET"])
 @login_required
@@ -820,13 +874,35 @@ def delete_url(url_id):
             key = f"user:{username}:url:{url_id}"
             if not valkey_client.exists(key):
                 logger.warning(f"URL {url_id} not found for user {username}")
-                abort(404, "URL not found")
+                response = make_response(render_template_string("""
+                    <!DOCTYPE html>
+                    <html lang="en">
+                    <head>
+                        <meta charset="UTF-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <meta name="robots" content="noindex, nofollow">
+                        <meta name="description" content="Secure URL redirection service">
+                        <meta name="keywords" content="URL redirection, secure links, link management">
+                        <meta name="author" content="TamariskSD">
+                        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                        <meta name="referrer" content="strict-origin-when-cross-origin">
+                        <title>URL Not Found - TamariskSD</title>
+                        <script src="https://cdn.tailwindcss.com"></script>
+                    </head>
+                    <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                        <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                            <h3 class="text-lg font-bold mb-4 text-red-600">URL Not Found</h3>
+                            <p class="text-gray-600">The requested URL was not found.</p>
+                        </div>
+                    </body>
+                    </html>
+                """), 404)
+                return add_security_headers(response)
             valkey_client.delete(key)
             valkey_client.delete(f"url_payload:{url_id}")
             logger.debug(f"Deleted URL {url_id}")
             response = make_response(redirect(url_for('dashboard')))
-            response.headers['Content-Security-Policy'] = "default-src 'self';"
-            return response
+            return add_security_headers(response)
         else:
             logger.warning("Valkey unavailable, cannot delete URL")
             response = make_response(render_template_string("""
@@ -836,23 +912,23 @@ def delete_url(url_id):
                     <meta charset="UTF-8">
                     <meta name="viewport" content="width=device-width, initial-scale=1.0">
                     <meta name="robots" content="noindex, nofollow">
-                    <title>Error</title>
-                    <style>
-                        body { font-family: Arial, sans-serif; background: #f3f4f6; }
-                        .error-container { max-width: 400px; margin: auto; padding: 20px; text-align: center; }
-                        .error-container h3 { color: #b91c1c; }
-                    </style>
+                    <meta name="description" content="Secure URL redirection service">
+                    <meta name="keywords" content="URL redirection, secure links, link management">
+                    <meta name="author" content="TamariskSD">
+                    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                    <meta name="referrer" content="strict-origin-when-cross-origin">
+                    <title>Error - TamariskSD</title>
+                    <script src="https://cdn.tailwindcss.com"></script>
                 </head>
-                <body class="min-h-screen flex items-center justify-center p-4">
-                    <div class="error-container bg-white p-8 rounded-xl shadow-lg">
-                        <h3 class="text-lg font-bold mb-4">Error</h3>
-                        <p>Database unavailable. Unable to delete URL.</p>
+                <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                    <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                        <h3 class="text-lg font-bold mb-4 text-red-600">Error</h3>
+                        <p class="text-gray-600">Database unavailable. Unable to delete URL.</p>
                     </div>
                 </body>
                 </html>
             """), 500)
-            response.headers['Content-Security-Policy'] = "default-src 'self';"
-            return response
+            return add_security_headers(response)
     except Exception as e:
         logger.error(f"Error in delete_url: {str(e)}", exc_info=True)
         response = make_response(render_template_string("""
@@ -862,23 +938,23 @@ def delete_url(url_id):
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta name="robots" content="noindex, nofollow">
-                <title>Internal Server Error</title>
-                <style>
-                    body { font-family: Arial, sans-serif; background: #f3f4f6; }
-                    .error-container { max-width: 400px; margin: auto; padding: 20px; text-align: center; }
-                    .error-container h3 { color: #b91c1c; }
-                </style>
+                <meta name="description" content="Secure URL redirection service">
+                <meta name="keywords" content="URL redirection, secure links, link management">
+                <meta name="author" content="TamariskSD">
+                <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                <meta name="referrer" content="strict-origin-when-cross-origin">
+                <title>Internal Server Error - TamariskSD</title>
+                <script src="https://cdn.tailwindcss.com"></script>
             </head>
-            <body class="min-h-screen flex items-center justify-center p-4">
-                <div class="error-container bg-white p-8 rounded-xl shadow-lg">
-                    <h3 class="text-lg font-bold mb-4">Internal Server Error</h3>
-                    <p>Something went wrong. Please try again later.</p>
+            <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                    <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
+                    <p class="text-gray-600">Something went wrong. Please try again later.</p>
                 </div>
             </body>
             </html>
         """), 500)
-        response.headers['Content-Security-Policy'] = "default-src 'self';"
-        return response
+        return add_security_headers(response)
 
 @app.route("/<endpoint>/<path:encrypted_payload>/<path:path_segment>", methods=["GET"], subdomain="<username>")
 @rate_limit(limit=5, per=60)
@@ -892,7 +968,7 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
         url_id = hashlib.sha256(f"{endpoint}{encrypted_payload}".encode()).hexdigest()
 
         # Randomized Redirect Delay
-        delay = random.uniform(0.1, 0.3)
+        delay = random.uniform(0.1, 0.5)
         time.sleep(delay)
         logger.debug(f"Applied random delay of {delay:.3f} seconds")
 
@@ -911,11 +987,34 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
             logger.debug(f"Decoded encrypted_payload: {encrypted_payload[:20]}...")
         except Exception as e:
             logger.error(f"Error decoding encrypted_payload: {str(e)}", exc_info=True)
-            abort(400, "Invalid payload format")
+            response = make_response(render_template_string("""
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <meta name="robots" content="noindex, nofollow">
+                    <meta name="description" content="Secure URL redirection service">
+                    <meta name="keywords" content="URL redirection, secure links, link management">
+                    <meta name="author" content="TamariskSD">
+                    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                    <meta name="referrer" content="strict-origin-when-cross-origin">
+                    <title>Invalid Link - TamariskSD</title>
+                    <script src="https://cdn.tailwindcss.com"></script>
+                </head>
+                <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                    <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                        <h3 class="text-lg font-bold mb-4 text-red-600">Invalid Link</h3>
+                        <p class="text-gray-600">Invalid payload format.</p>
+                    </div>
+                </body>
+                </html>
+            """), 400)
+            return add_security_headers(response)
 
-        # Clean path_segment by removing random suffix
-        random_suffix_pattern = r'(/[0-9a-f]{16})?$'
-        cleaned_path_segment = re.sub(random_suffix_pattern, '', path_segment)
+        # Clean path_segment by removing UUID suffix
+        uuid_suffix_pattern = r'(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[0-9a-f]+)?$'
+        cleaned_path_segment = re.sub(uuid_suffix_pattern, '', path_segment)
         logger.debug(f"Cleaned path_segment: {cleaned_path_segment}")
 
         payload = None
@@ -960,23 +1059,23 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                     <meta charset="UTF-8">
                     <meta name="viewport" content="width=device-width, initial-scale=1.0">
                     <meta name="robots" content="noindex, nofollow">
-                    <title>Invalid Link</title>
-                    <style>
-                        body { font-family: Arial, sans-serif; background: #f3f4f6; }
-                        .error-container { max-width: 400px; margin: auto; padding: 20px; text-align: center; }
-                        .error-container h3 { color: #b91c1c; }
-                    </style>
+                    <meta name="description" content="Secure URL redirection service">
+                    <meta name="keywords" content="URL redirection, secure links, link management">
+                    <meta name="author" content="TamariskSD">
+                    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                    <meta name="referrer" content="strict-origin-when-cross-origin">
+                    <title>Invalid Link - TamariskSD</title>
+                    <script src="https://cdn.tailwindcss.com"></script>
                 </head>
-                <body class="min-h-screen flex items-center justify-center p-4">
-                    <div class="error-container bg-white p-8 rounded-xl shadow-lg">
-                        <h3 class="text-lg font-bold mb-4">Invalid Link</h3>
-                        <p>The link is invalid or has expired. Please contact support.</p>
+                <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                    <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                        <h3 class="text-lg font-bold mb-4 text-red-600">Invalid Link</h3>
+                        <p class="text-gray-600">The link is invalid or has expired. Please contact support.</p>
                     </div>
                 </body>
                 </html>
             """), 400)
-            response.headers['Content-Security-Policy'] = "default-src 'self';"
-            return response
+            return add_security_headers(response)
 
         try:
             data = json.loads(payload)
@@ -984,26 +1083,90 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
             expiry = data.get("expiry", float('inf'))
             if not redirect_url or not re.match(r"^https?://", redirect_url):
                 logger.error(f"Invalid redirect URL: {redirect_url}")
-                abort(400, "Invalid redirect URL")
+                response = make_response(render_template_string("""
+                    <!DOCTYPE html>
+                    <html lang="en">
+                    <head>
+                        <meta charset="UTF-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <meta name="robots" content="noindex, nofollow">
+                        <meta name="description" content="Secure URL redirection service">
+                        <meta name="keywords" content="URL redirection, secure links, link management">
+                        <meta name="author" content="TamariskSD">
+                        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                        <meta name="referrer" content="strict-origin-when-cross-origin">
+                        <title>Invalid Link - TamariskSD</title>
+                        <script src="https://cdn.tailwindcss.com"></script>
+                    </head>
+                    <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                        <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                            <h3 class="text-lg font-bold mb-4 text-red-600">Invalid Link</h3>
+                            <p class="text-gray-600">Invalid redirect URL.</p>
+                        </div>
+                    </body>
+                    </html>
+                """), 400)
+                return add_security_headers(response)
             if time.time() > expiry:
                 logger.warning("URL expired")
                 if valkey_client:
                     valkey_client.delete(f"url_payload:{url_id}")
-                abort(410, "URL has expired")
+                response = make_response(render_template_string("""
+                    <!DOCTYPE html>
+                    <html lang="en">
+                    <head>
+                        <meta charset="UTF-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <meta name="robots" content="noindex, nofollow">
+                        <meta name="description" content="Secure URL redirection service">
+                        <meta name="keywords" content="URL redirection, secure links, link management">
+                        <meta name="author" content="TamariskSD">
+                        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                        <meta name="referrer" content="strict-origin-when-cross-origin">
+                        <title>Link Expired - TamariskSD</title>
+                        <script src="https://cdn.tailwindcss.com"></script>
+                    </head>
+                    <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                        <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                            <h3 class="text-lg font-bold mb-4 text-red-600">Link Expired</h3>
+                            <p class="text-gray-600">The link has expired. Please contact support.</p>
+                        </div>
+                    </body>
+                    </html>
+                """), 410)
+                return add_security_headers(response)
             logger.debug(f"Parsed payload: redirect_url={redirect_url}")
         except Exception as e:
             logger.error(f"Payload parsing error: {str(e)}", exc_info=True)
-            abort(400, "Invalid payload")
+            response = make_response(render_template_string("""
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <meta name="robots" content="noindex, nofollow">
+                    <meta name="description" content="Secure URL redirection service">
+                    <meta name="keywords" content="URL redirection, secure links, link management">
+                    <meta name="author" content="TamariskSD">
+                    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                    <meta name="referrer" content="strict-origin-when-cross-origin">
+                    <title>Invalid Link - TamariskSD</title>
+                    <script src="https://cdn.tailwindcss.com"></script>
+                </head>
+                <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                    <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                        <h3 class="text-lg font-bold mb-4 text-red-600">Invalid Link</h3>
+                        <p class="text-gray-600">Invalid payload.</p>
+                    </div>
+                </body>
+                </html>
+            """), 400)
+            return add_security_headers(response)
 
         final_url = f"{redirect_url.rstrip('/')}/{cleaned_path_segment.lstrip('/')}"
         logger.info(f"Redirecting to {final_url}")
         response = make_response(redirect(final_url, code=302))
-        response.headers['Content-Security-Policy'] = "default-src 'self';"
-        response.headers['X-Content-Type-Options'] = 'nosniff'
-        response.headers['X-Frame-Options'] = 'DENY'
-        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-        return response
+        return add_security_headers(response)
     except Exception as e:
         logger.error(f"Error in redirect_handler: {str(e)}", exc_info=True)
         response = make_response(render_template_string("""
@@ -1013,24 +1176,24 @@ def redirect_handler(username, endpoint, encrypted_payload, path_segment):
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta name="robots" content="noindex, nofollow">
-                <title>Internal Server Error</title>
-                <style>
-                    body { font-family: Arial, sans-serif; background: #f3f4f6; }
-                    .error-container { max-width: 400px; margin: auto; padding: 20px; text-align: center; }
-                    .error-container h3 { color: #b91c1c; }
-                </style>
+                <meta name="description" content="Secure URL redirection service">
+                <meta name="keywords" content="URL redirection, secure links, link management">
+                <meta name="author" content="TamariskSD">
+                <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                <meta name="referrer" content="strict-origin-when-cross-origin">
+                <title>Internal Server Error - TamariskSD</title>
+                <script src="https://cdn.tailwindcss.com"></script>
             </head>
-            <body class="min-h-screen flex items-center justify-center p-4">
-                <div class="error-container bg-white p-8 rounded-xl shadow-lg">
-                    <h3 class="text-lg font-bold mb-4">Internal Server Error</h3>
-                    <p>Something went wrong: {{ error }}</p>
-                    <p>Please try again later or contact support.</p>
+            <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                    <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
+                    <p class="text-gray-600">Something went wrong: {{ error }}</p>
+                    <p class="text-gray-600">Please try again later or contact support.</p>
                 </div>
             </body>
             </html>
         """, error=str(e)), 500)
-        response.headers['Content-Security-Policy'] = "default-src 'self';"
-        return response
+        return add_security_headers(response)
 
 @app.route("/<endpoint>/<path:encrypted_payload>/<path:path_segment>", methods=["GET"])
 @rate_limit(limit=5, per=60)
@@ -1041,7 +1204,8 @@ def redirect_handler_no_subdomain(endpoint, encrypted_payload, path_segment):
         logger.debug(f"Fallback redirect handler: username={username}, endpoint={endpoint}, "
                      f"encrypted_payload={encrypted_payload[:20]}..., path_segment={path_segment}, "
                      f"URL={request.url}")
-        return redirect_handler(username, endpoint, encrypted_payload, path_segment)
+        response = make_response(redirect_handler(username, endpoint, encrypted_payload, path_segment))
+        return add_security_headers(response)
     except Exception as e:
         logger.error(f"Error in redirect_handler_no_subdomain: {str(e)}", exc_info=True)
         response = make_response(render_template_string("""
@@ -1051,24 +1215,24 @@ def redirect_handler_no_subdomain(endpoint, encrypted_payload, path_segment):
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta name="robots" content="noindex, nofollow">
-                <title>Internal Server Error</title>
-                <style>
-                    body { font-family: Arial, sans-serif; background: #f3f4f6; }
-                    .error-container { max-width: 400px; margin: auto; padding: 20px; text-align: center; }
-                    .error-container h3 { color: #b91c1c; }
-                </style>
+                <meta name="description" content="Secure URL redirection service">
+                <meta name="keywords" content="URL redirection, secure links, link management">
+                <meta name="author" content="TamariskSD">
+                <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                <meta name="referrer" content="strict-origin-when-cross-origin">
+                <title>Internal Server Error - TamariskSD</title>
+                <script src="https://cdn.tailwindcss.com"></script>
             </head>
-            <body class="min-h-screen flex items-center justify-center p-4">
-                <div class="error-container bg-white p-8 rounded-xl shadow-lg">
-                    <h3 class="text-lg font-bold mb-4">Internal Server Error</h3>
-                    <p>Something went wrong: {{ error }}</p>
-                    <p>Please try again later or contact support.</p>
+            <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                    <h3 class="text-lg font-bold mb-4 text-red-600">Internal Server Error</h3>
+                    <p class="text-gray-600">Something went wrong: {{ error }}</p>
+                    <p class="text-gray-600">Please try again later or contact support.</p>
                 </div>
             </body>
             </html>
         """, error=str(e)), 500)
-        response.headers['Content-Security-Policy'] = "default-src 'self';"
-        return response
+        return add_security_headers(response)
 
 @app.route("/<path:path>", methods=["GET"])
 def catch_all(path):
@@ -1080,24 +1244,24 @@ def catch_all(path):
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <meta name="robots" content="noindex, nofollow">
-            <title>Not Found</title>
-            <style>
-                body { font-family: Arial, sans-serif; background: #f3f4f6; }
-                .error-container { max-width: 400px; margin: auto; padding: 20px; text-align: center; }
-                .error-container h3 { color: #b91c1c; }
-            </style>
+            <meta name="description" content="Secure URL redirection service">
+            <meta name="keywords" content="URL redirection, secure links, link management">
+            <meta name="author" content="TamariskSD">
+            <meta http-equiv="X-UA-Compatible" content="IE=edge">
+            <meta name="referrer" content="strict-origin-when-cross-origin">
+            <title>Not Found - TamariskSD</title>
+            <script src="https://cdn.tailwindcss.com"></script>
         </head>
-        <body class="min-h-screen flex items-center justify-center p-4">
-            <div class="error-container bg-white p-8 rounded-xl shadow-lg">
-                <h3 class="text-lg font-bold mb-4">Not Found</h3>
-                <p>The requested URL was not found on the server.</p>
-                <p>Please check your spelling and try again.</p>
+        <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+            <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                <h3 class="text-lg font-bold mb-4 text-red-600">Not Found</h3>
+                <p class="text-gray-600">The requested URL was not found on the server.</p>
+                <p class="text-gray-600">Please check your spelling and try again.</p>
             </div>
         </body>
         </html>
     """), 404)
-    response.headers['Content-Security-Policy'] = "default-src 'self';"
-    return response
+    return add_security_headers(response)
 
 def generate_random_string(length):
     try:
