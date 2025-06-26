@@ -38,18 +38,17 @@ logger.debug("Initializing Flask app")
 # Configuration values
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(16))
 WTF_CSRF_SECRET_KEY = os.getenv("WTF_CSRF_SECRET_KEY", secrets.token_hex(16))
-# Fix for AES_GCM_KEY: Handle string from env or generate bytes
+# Fix for AES_GCM_KEY and HMAC_KEY
 AES_GCM_KEY = os.getenv("AES_GCM_KEY")
 if AES_GCM_KEY:
-    AES_GCM_KEY = AES_GCM_KEY.encode('utf-8')[:32].ljust(32, b'\0')  # Encode string and pad/truncate to 32 bytes
+    AES_GCM_KEY = AES_GCM_KEY.encode('utf-8')[:32].ljust(32, b'\0')
 else:
-    AES_GCM_KEY = secrets.token_bytes(32)  # Generate 32-byte key
-# Fix for HMAC_KEY: Handle string from env or generate bytes
+    AES_GCM_KEY = secrets.token_bytes(32)
 HMAC_KEY = os.getenv("HMAC_KEY")
 if HMAC_KEY:
-    HMAC_KEY = HMAC_KEY.encode('utf-8')[:32].ljust(32, b'\0')  # Encode string and pad/truncate to 32 bytes
+    HMAC_KEY = HMAC_KEY.encode('utf-8')[:32].ljust(32, b'\0')
 else:
-    HMAC_KEY = secrets.token_bytes(32)  # Generate 32-byte key
+    HMAC_KEY = secrets.token_bytes(32)
 VALKEY_HOST = "valkey-137d99b9-reign.e.aivencloud.com"
 VALKEY_PORT = 25708
 VALKEY_USERNAME = "default"
@@ -596,9 +595,9 @@ def dashboard():
                         })
                     except Exception as e:
                         logger.error(f"Error processing URL key {key}: {str(e)}")
-                    except Exception as e:
-                        logger.error(f"Valkey error fetching URLs: {str(e)}")
-                        valkey_error = "Unable to fetch URL history due to database error"
+            except Exception as e:
+                logger.error(f"Valkey error fetching URLs: {str(e)}")
+                valkey_error = "Unable to fetch URL history due to database error"
         else:
             logger.warning("Valkey unavailable, cannot fetch URLs")
             valkey_error = "Database unavailable"
