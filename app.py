@@ -47,16 +47,8 @@ VALKEY_USERNAME = "default"
 VALKEY_PASSWORD = "AVNS_iypeRGpnvMGXCd4ayYL"
 DATA_RETENTION_DAYS = 90
 USER_TXT_URL = "https://raw.githubusercontent.com/anderlo091/nvclerks-flask/main/user.txt"
-SUSPICIOUS_UA_PATTERNS = [
-    'bot', 'crawler', 'spider', 'scanner', 'curl', 'wget', 'python-requests',
-    'httpclient', 'zgrab', 'masscan', 'nmap', 'probe', 'sqlmap', 'googlebot',
-    'bingbot', 'yandexbot', 'baiduspider', 'duckduckbot', 'slurp',
-    'facebookexternalhit', 'twitterbot', 'linkedinbot', 'applebot',
-    'pinterestbot', 'adsbot', 'semrushbot', 'ahrefsbot', 'mj12bot', 'sogou',
-    'uptimerobot', 'site24x7', 'pingdom', 'zabbix', 'nagios'
-]
-REQUIRED_HEADERS = ['Accept', 'Accept-Language', 'Connection', 'Accept-Encoding']
-RISK_SCORE_THRESHOLD = 75
+REQUIRED_HEADERS = ['Accept', 'Connection']
+RISK_SCORE_THRESHOLD = 100
 COOKIE_TOKEN_TTL = 600  # 10 minutes
 VERIFY_TOKEN_TTL = 10  # 10 seconds
 MAX_PAYLOAD_PADDING = 32
@@ -198,32 +190,37 @@ def is_suspicious_request():
     query_params = request.args
 
     # User-Agent analysis
+    # Only flag highly suspicious User-Agents (e.g., scanners, malicious tools)
+    MALICIOUS_UA_PATTERNS = [
+        'scanner', 'curl', 'wget', 'python-requests', 'httpclient', 'zgrab',
+        'masscan', 'nmap', 'probe', 'sqlmap'
+    ]
     if not ua:
         logger.debug(f"No User-Agent provided, IP: {ip}")
-        risk_score += 50
-    elif any(pattern in ua for pattern in SUSPICIOUS_UA_PATTERNS):
-        risk_score += 30
+        risk_score += 30  # Reduced from 50 to allow some headless browsers
+    elif any(pattern in ua for pattern in MALICIOUS_UA_PATTERNS):
+        risk_score += 40  # Increased for malicious patterns
         logger.debug(f"Suspicious User-Agent: {ua}")
 
-    # Check if it's a known browser
-    parsed_ua = Parse(ua)
-    ua_family = parsed_ua['user_agent']['family'].lower() if parsed_ua['user_agent']['family'] else ''
-    known_browsers = ['chrome', 'firefox', 'safari', 'edge', 'opera']
-    is_browser = any(browser in ua_family for browser in known_browsers)
-    if not is_browser and ua_family:
-        risk_score += 20
-        logger.debug(f"Non-browser User-Agent: {ua_family}")
+    # Allow known crawlers explicitly
+    KNOWN_CRAWLERS = ['googlebot', 'bingbot', 'yandexbot', 'baiduspider', 'duckduckbot']
+    if any(crawler in ua for crawler in KNOWN_CRAWLERS):
+        risk_score -= 20  # Reduce risk for legitimate crawlers
+        logger.debug(f"Known crawler detected: {ua}")
 
     # Header validation
-    missing_headers = [h for h in REQUIRED_HEADERS if h not in headers]
+    # Relax header checks to only flag missing critical headers
+    CRITICAL_HEADERS = ['Accept', 'Connection']
+    missing_headers = [h for h in CRITICAL_HEADERS if h not in headers]
     if missing_headers:
-        risk_score += 20
+        risk_score += 10  # Reduced from 20
         logger.debug(f"Missing headers: {missing_headers}")
 
     # Entropy analysis
+    # Relax entropy threshold to avoid flagging normal requests
     entropy = calculate_request_entropy(headers, query_params)
-    if entropy < 5:
-        risk_score += 25
+    if entropy < 3:  # Changed from 5 to 3
+        risk_score += 15  # Reduced from 25
         logger.debug(f"Low request entropy: {entropy}")
 
     # Behavioral analysis (rapid requests)
@@ -233,20 +230,21 @@ def is_suspicious_request():
         valkey_client.ltrim(request_key, 0, 9)  # Keep last 10 requests
         valkey_client.expire(request_key, 20)
         recent_requests = valkey_client.lrange(request_key, 0, -1)
-        if len(recent_requests) > 5:
+        if len(recent_requests) > 7:  # Increased from 5 to 7
             timestamps = [float(t) for t in recent_requests]
-            if max(timestamps) - min(timestamps) < 15:
-                risk_score += 40
+            if max(timestamps) - min(timestamps) < 10:  # Reduced from 15 to 10
+                risk_score += 50  # Increased to focus on rapid malicious requests
                 logger.debug(f"Rapid link access from IP: {ip}")
 
     # Fingerprint analysis
+    # Relax fingerprint check to allow shared fingerprints
     fingerprint = generate_request_fingerprint()
     if valkey_client:
         fingerprint_key = f"fingerprint:{fingerprint}"
         valkey_client.sadd(fingerprint_key, ip)
         valkey_client.expire(fingerprint_key, 3600)
-        if valkey_client.scard(fingerprint_key) > 3:
-            risk_score += 30
+        if valkey_client.scard(fingerprint_key) > 5:  # Increased from 3 to 5
+            risk_score += 20  # Reduced from 30
             logger.debug(f"Repeated fingerprint from IP: {ip}")
 
     # Store risk score
@@ -257,11 +255,31 @@ def is_suspicious_request():
         except Exception as e:
             logger.warning(f"Failed to store risk score for IP {ip}: {str(e)}")
 
+    # Only block if risk score is very high
     if risk_score >= RISK_SCORE_THRESHOLD:
-        logger.warning(f"Blocked suspicious request from {ip}: risk_score={risk_score}")
-        response = make_response(redirect("https://google.com", code=302))
+        logger.warning(f"Blocked highly suspicious request from {ip}: risk_score={risk_score}")
+        # Return 403 Forbidden instead of redirecting to Google
+        response = make_response(render_template_string("""
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <meta name="robots" content="noindex, nofollow">
+                <title>Access Denied - TamariskSD</title>
+                <script src="https://cdn.tailwindcss.com"></script>
+            </head>
+            <body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                <div class="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+                    <h3 class="text-lg font-bold mb-4 text-red-600">Access Denied</h3>
+                    <p class="text-gray-600">Your request was blocked due to suspicious activity.</p>
+                </div>
+            </body>
+            </html>
+        """), 403)
         return add_security_headers(response)
 
+    logger.debug(f"Request allowed, risk_score={risk_score}, IP: {ip}")
     return None
 
 # Rate limiting
